@@ -6,9 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_subdirectory(external/SDL)
 
-add_executable(MiniFluid
-    src/main.cpp
-)
+file(GLOB SRC_FILES CONFIGURE_DEPENDS src/*.cpp)
+
+add_executable(MiniFluid ${SRC_FILES})
 
 target_link_libraries(MiniFluid PRIVATE SDL3::SDL3)
 
