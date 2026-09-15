@@ -14,8 +14,8 @@ SDL_Texture* gSimTexture;
 static int gDone;
 const int WINDOW_WIDTH = 1024 / 2;
 const int WINDOW_HEIGHT = 1024 / 2;
-const int SIM_WIDTH = 128;
-const int SIM_HEIGHT = 128;
+const int SIM_WIDTH = 256;
+const int SIM_HEIGHT = 256;
 
 FluidSolver2D solver = FluidSolver2D(SIM_WIDTH, SIM_HEIGHT, 1.0f / SIM_WIDTH);
 
@@ -81,11 +81,26 @@ void render(Uint64 aTicks) {
 }
 
 void loop() {
+    static Uint64 prev_ticks = SDL_GetTicks();
+    static double accumulator = 0.0;
+    constexpr double simulation_dt = 1.0 / 120.0;
+
+    const Uint64 cur_ticks = SDL_GetTicks();
+    double frame_dt = static_cast<double>(cur_ticks - prev_ticks) / 1000.0;
+    prev_ticks = cur_ticks;
+
+    frame_dt = std::min(frame_dt, 0.1);
+    accumulator += frame_dt;
     if (!update()) {
         gDone = 1;
-    } else {
-        render(SDL_GetTicks());
+        return;
+    } 
+    
+    while (accumulator >= simulation_dt) {
+        solver.step(static_cast<float>(simulation_dt));
+        accumulator -= simulation_dt;
     }
+    render(cur_ticks);
 }
 
 int main(int argc, char** argv) {
@@ -96,6 +111,9 @@ int main(int argc, char** argv) {
     gFrameBuffer = std::vector<uint8_t>(SIM_WIDTH * SIM_HEIGHT * 4); // ABGR8888
     gSDLWindow = SDL_CreateWindow("MiniFluid", WINDOW_WIDTH, WINDOW_HEIGHT, 0);
     gSDLRenderer = SDL_CreateRenderer(gSDLWindow, nullptr);
+    if (!SDL_SetRenderVSync(gSDLRenderer, 1)) {
+        SDL_Log("Failed to enable VSync: %s", SDL_GetError());
+    }
     gSimTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SIM_WIDTH, SIM_HEIGHT);
     if (!gSDLWindow || !gSDLRenderer || !gSimTexture){
         SDL_Log("Initialization failed: %s", SDL_GetError());
