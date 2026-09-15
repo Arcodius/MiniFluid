@@ -53,7 +53,6 @@ public:
     int ny() const { return ny_; }
     float spacing() const { return h_; }
 
-    float bilerpClamped(const Grid2D& grid, float gx, float gy);
     Vec2 cellVelocity(int i, int j);
     Vec2 sampleVelocity(float x, float y);
     float divergenceAt(int i, int j);
