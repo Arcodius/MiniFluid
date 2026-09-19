@@ -14,8 +14,8 @@ SDL_Texture* gSimTexture;
 static int gDone;
 const int WINDOW_WIDTH = 1024 / 2;
 const int WINDOW_HEIGHT = 1024 / 2;
-const int SIM_WIDTH = 256;
-const int SIM_HEIGHT = 256;
+const int SIM_WIDTH = 128;
+const int SIM_HEIGHT = 128;
 
 FluidSolver2D solver = FluidSolver2D(SIM_WIDTH, SIM_HEIGHT, 1.0f / SIM_WIDTH);
 

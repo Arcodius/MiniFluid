@@ -25,19 +25,25 @@ public:
     int width() const { return nx_; }
     int height() const { return ny_; }
     float spacing() const { return h_; }
+
+    void fill(float value) {
+        std::fill(data_.begin(), data_.end(), value);
+    }
 };
 
 class MacGrid2D {
 private:
     int nx_, ny_;
     float h_;
+    float rho_;
     Grid2D pressure_;
     Grid2D u_;
     Grid2D v_;
+    
 
 public:
-    MacGrid2D(int nx, int ny, float h)
-        : nx_(nx), ny_(ny), h_(h),
+    MacGrid2D(int nx, int ny, float h, float rho)
+        : nx_(nx), ny_(ny), h_(h), rho_(rho),
           pressure_(nx, ny, h),
           u_(nx + 1, ny, h),
           v_(nx, ny + 1, h) {}
@@ -52,8 +58,10 @@ public:
     int nx() const { return nx_; }
     int ny() const { return ny_; }
     float spacing() const { return h_; }
+    float rho() const { return rho_; }
 
     Vec2 cellVelocity(int i, int j);
     Vec2 sampleVelocity(float x, float y);
     float divergenceAt(int i, int j);
+    void applyPressureGradient(float dt);
 };

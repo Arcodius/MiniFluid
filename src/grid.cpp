@@ -38,3 +38,18 @@ float MacGrid2D::divergenceAt(int i, int j) {
     return (du + dv) / h_;
 }
 
+// Velocity correction: only updates the inner faces
+void MacGrid2D::applyPressureGradient(float dt) {
+    float inv_rho = 1.0f / rho_;
+    float inv_h = 1.0f / h_;
+    for (int j = 0; j < ny_; ++j) {
+        for (int i = 1; i < nx_; ++i) {
+            u_(i, j) -= dt * inv_rho * (pressure_(i, j) - pressure_(i - 1, j)) * inv_h;
+        }
+    }
+    for (int j = 1; j < ny_; ++j) {
+        for (int i = 0; i < nx_; ++i) {
+            v_(i, j) -= dt * inv_rho * (pressure_(i, j) - pressure_(i, j - 1)) * inv_h;
+        }
+    }
+}
