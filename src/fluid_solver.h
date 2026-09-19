@@ -10,7 +10,10 @@ private:
     float h_;
     float rho_;
 
+    Grid2D u_next_;
+    Grid2D v_next_;
     Grid2D density_next_;
+    Grid2D pressure_next_;
 
 public:
     Grid2D density;
@@ -22,7 +25,7 @@ public:
         : nx_(nx), ny_(ny), h_(h), rho_(rho),
         density(nx, ny, h), divergence(nx, ny, h),
         macgrid(nx, ny, h, rho),
-        density_next_(nx, ny, h)
+        u_next_(nx + 1, ny, h), v_next_(nx, ny + 1, h), density_next_(nx, ny, h), pressure_next_(nx, ny, h)
     {
         initVelocity();
         initDensity();

@@ -131,7 +131,7 @@ void FluidSolver2D::advectVelocity(float dt) {
             const float v_i = dep_x * inv_h - 0.5f;
             const float v_j = dep_y * inv_h;
 
-            v_next(i, j) = sampleBilinear(macgrid.u(), v_i, v_j);
+            v_next(i, j) = sampleBilinear(macgrid.v(), v_i, v_j);
         }
     }
 
@@ -141,14 +141,14 @@ void FluidSolver2D::advectVelocity(float dt) {
 
 // simplified buoyancy: f_y = \alpha \rho
 void FluidSolver2D::addForces(float dt) {
-    constexpr float buoyancy = 1.0f;
+    // constexpr float buoyancy = 1.0f;
 
-    for (int j = 1; j < ny_; ++j) {
-        for (int i = 0; i < nx_; ++i) {
-            float face_density = 0.5f * (density(i, j - 1) + density(i, j + 1));
-            macgrid.v()(i, j) += dt * buoyancy * face_density;
-        }
-    }
+    // for (int j = 1; j < ny_; ++j) {
+    //     for (int i = 0; i < nx_; ++i) {
+    //         float face_density = 0.5f * (density(i, j - 1) + density(i, j));
+    //         macgrid.v()(i, j) += dt * buoyancy * face_density;
+    //     }
+    // }
 }
 
 void FluidSolver2D::enforceBoundaryVelocity() {
@@ -216,11 +216,11 @@ void FluidSolver2D::step(float dt) {
     enforceBoundaryVelocity();
 
     computeDivergence();
-    testDivergence();
-    solvePressure(dt, 100);
+    // testDivergence();
+    solvePressure(dt, 10);
     applyPressureGradient(dt);
-    computeDivergence(); // for comparison
-    testDivergence();
+    // computeDivergence(); // for comparison
+    // testDivergence();
 
     advectDensity(dt);
 }

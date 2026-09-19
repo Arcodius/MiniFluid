@@ -22,7 +22,7 @@ Vec2 MacGrid2D::cellVelocity(int i, int j) {
 }
 
 // Sample velocity with real coordinates
-Vec2 MacGrid2D::sampleVelocity(float x, float y) {
+Vec2 MacGrid2D::sampleVelocity(float x, float y) const {
     const float inv_h = 1.0f / h_;
 
     const float u = sampleBilinear(u_, x * inv_h, y * inv_h - 0.5f);

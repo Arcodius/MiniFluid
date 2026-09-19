@@ -61,8 +61,7 @@ public:
     float rho() const { return rho_; }
 
     Vec2 cellVelocity(int i, int j);
-    Vec2 sampleVelocity(float x, float y);
-    Vec2 sampleVelocity(int i, int j);
+    Vec2 sampleVelocity(float x, float y) const;
     float divergenceAt(int i, int j);
     void applyPressureGradient(float dt);
 };

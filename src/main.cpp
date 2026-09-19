@@ -115,7 +115,8 @@ void render(Uint64 aTicks) {
 void loop() {
     static Uint64 prev_ticks = SDL_GetTicks();
     static double accumulator = 0.0;
-    constexpr double simulation_dt = 1.0 / 120.0;
+    constexpr double simulation_dt = 1.0 / 60.0;
+    constexpr int max_step_per_frame = 4;
 
     const Uint64 cur_ticks = SDL_GetTicks();
     double frame_dt = static_cast<double>(cur_ticks - prev_ticks) / 1000.0;
@@ -127,10 +128,14 @@ void loop() {
         gDone = 1;
         return;
     } 
-    
-    while (accumulator >= simulation_dt) {
+    int steps = 0;
+    while (accumulator >= simulation_dt && steps < max_step_per_frame) {
         solver.step(static_cast<float>(simulation_dt));
         accumulator -= simulation_dt;
+        steps++;
+    }
+    if (steps == max_step_per_frame) {
+        accumulator = 0.0;
     }
     render(cur_ticks);
 }
