@@ -20,6 +20,13 @@ const int SIM_HEIGHT = 256;
 FluidSolver2D solver = FluidSolver2D(SIM_WIDTH, SIM_HEIGHT, 1.0f / SIM_WIDTH);
 
 bool SMOOTH_RENDERING = true;
+bool SHOW_DIV = false;
+
+enum class DisplayQuantity {
+    Density,
+    Divergence
+};
+DisplayQuantity gDisplayQuantity = DisplayQuantity::Density;
 
 SDL_FRect calDstRect(int outputWidth, int outputHeight, int simWidth, int simHeight) {
     const float scaleX = static_cast<float>(outputWidth) / simWidth;
@@ -45,12 +52,30 @@ bool update() {
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_ESCAPE) {
             return false;
         }
-        if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_S) {
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_S) {
             SMOOTH_RENDERING = !SMOOTH_RENDERING;
+            SDL_SetTextureScaleMode(gSimTexture, SMOOTH_RENDERING ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+            return true;
+        }
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_D) {
+            gDisplayQuantity = (gDisplayQuantity == DisplayQuantity::Divergence) ? DisplayQuantity::Density : DisplayQuantity::Divergence;
             return true;
         }
     }
     return true;
+}
+
+
+
+float displayValue(DisplayQuantity quantity, int i, int j) {
+    switch (quantity) {
+        case DisplayQuantity::Density:
+            return solver.density(i, j);
+        case DisplayQuantity::Divergence:
+            return solver.divergence(i, j);
+        default:
+            return 0.0f;
+    }
 }
 
 void render(Uint64 aTicks) {
@@ -58,8 +83,15 @@ void render(Uint64 aTicks) {
     auto [nx, ny] = solver.getSize();
     for (int j = 0, c = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i, ++c) {
-            const float value = solver.density(i, j);
-            const uint8_t byteValue = toByte(normalize(value, 0.0f, 1.0f));
+            const float value = displayValue(gDisplayQuantity, i, j);
+            float intensity;
+            if (gDisplayQuantity == DisplayQuantity::Density) {
+                intensity = normalize(value, 0.0f, 1.0f);
+            } else {
+                constexpr float divergenceRange = 1.0f;
+                intensity = normalize(value, -divergenceRange, divergenceRange);
+            }
+            const uint8_t byteValue = toByte(intensity);
             gFrameBuffer[c * 4 + 0] = byteValue;
             gFrameBuffer[c * 4 + 1] = byteValue;
             gFrameBuffer[c * 4 + 2] = byteValue;
