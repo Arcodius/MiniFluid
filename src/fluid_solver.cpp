@@ -52,6 +52,31 @@ std::pair<int, int> FluidSolver2D::getSize() const {
     return std::pair<int, int>(nx_, ny_);
 }
 
+void FluidSolver2D::addVelocitySource(float v0) {
+    const float center = 0.5f * nx_;
+    const float radius = 4.0f;
+    const int j = 1;
+
+    for (int i = 0; i < nx_; ++i) {
+        float distance = (i + 0.5f) - center;
+        float weight = std::exp(-(distance * distance) / (2.0f * radius * radius));
+        if (weight > 0.01f) {
+            macgrid.v()(i, j) = v0 * weight;
+        }
+    }
+}
+
+void FluidSolver2D::addDensitySource(float rho) {
+    const int center = nx_ / 2;
+    const int half_width = 3;
+    for (int i = center - half_width; i <= center + half_width; ++i) {
+        if (i >= 0 && i < nx_) {
+            density(i, 0) = rho;
+            density(i, 1) = rho;
+        }
+    }
+}
+
 void FluidSolver2D::advectDensity(float dt) {
     const float inv_h = 1.0f / h_;
     for (int i = 0; i < nx_; ++i) {
@@ -185,6 +210,8 @@ void FluidSolver2D::testDivergence() {
 
 void FluidSolver2D::step(float dt) {
     advectVelocity(dt);
+    addVelocitySource(1.f);
+    addDensitySource(1.f);
     addForces(dt);
     enforceBoundaryVelocity();
 

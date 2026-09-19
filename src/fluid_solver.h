@@ -35,6 +35,8 @@ public:
 
     void advectVelocity(float dt);
     void addForces(float dt);
+    void addVelocitySource(float v0);
+    void addDensitySource(float rho);
     void enforceBoundaryVelocity();
     
     void computeDivergence();
