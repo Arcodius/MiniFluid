@@ -55,13 +55,12 @@ std::pair<int, int> FluidSolver2D::getSize() const {
 void FluidSolver2D::addVelocitySource(float v0) {
     const float center = 0.5f * nx_;
     const float radius = 4.0f;
-    const int j = 1;
 
     for (int i = 0; i < nx_; ++i) {
         float distance = (i + 0.5f) - center;
         float weight = std::exp(-(distance * distance) / (2.0f * radius * radius));
         if (weight > 0.01f) {
-            macgrid.v()(i, j) = v0 * weight;
+            macgrid.v()(i, 1) = v0 * weight;
         }
     }
 }
