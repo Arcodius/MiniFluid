@@ -33,10 +33,15 @@ public:
 
     std::pair<int, int> getSize() const;
 
-    void advectDensity(float dt);
+    void advectVelocity(float dt);
+    void addForces(float dt);
+    void enforceBoundaryVelocity();
+    
     void computeDivergence();
     void solvePressure(float dt, int iterations);
     void applyPressureGradient(float dt);
     void testDivergence();
+
+    void advectDensity(float dt);
     void step(float dt);
 };

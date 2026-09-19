@@ -21,6 +21,7 @@ Vec2 MacGrid2D::cellVelocity(int i, int j) {
     return {uc, vc};
 }
 
+// Sample velocity with real coordinates
 Vec2 MacGrid2D::sampleVelocity(float x, float y) {
     const float inv_h = 1.0f / h_;
 

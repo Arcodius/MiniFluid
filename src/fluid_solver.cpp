@@ -71,6 +71,72 @@ void FluidSolver2D::advectDensity(float dt) {
     std::swap(density.data(), density_next_.data());
 }
 
+void FluidSolver2D::advectVelocity(float dt) {
+    const float inv_h = 1.0f / h_;
+    Grid2D u_next(nx_ + 1, ny_, h_);
+    Grid2D v_next(nx_, ny_ + 1, h_);
+
+    for (int j = 0; j < ny_; ++j) {
+        for (int i = 0; i < nx_; ++i) {
+            const float x = i * h_;
+            const float y = (j + 0.5f) * h_;
+
+            const Vec2 vel = macgrid.sampleVelocity(x, y);
+
+            const float dep_x = x - dt * vel.x;
+            const float dep_y = y - dt * vel.y;
+
+            const float u_i = dep_x * inv_h;
+            const float u_j = dep_y * inv_h - 0.5f;
+
+            u_next(i, j) = sampleBilinear(macgrid.u(), u_i, u_j);
+        }
+    }
+
+    for (int j = 0; j < ny_; ++j) {
+        for (int i = 0; i < nx_; ++i) {
+            const float x = (i + 0.5f) * h_;
+            const float y = j * h_;
+
+            const Vec2 vel = macgrid.sampleVelocity(x, y);
+
+            const float dep_x = x - dt * vel.x;
+            const float dep_y = y - dt * vel.y;
+
+            const float v_i = dep_x * inv_h - 0.5f;
+            const float v_j = dep_y * inv_h;
+
+            v_next(i, j) = sampleBilinear(macgrid.u(), v_i, v_j);
+        }
+    }
+
+    std::swap(macgrid.u().data(), u_next.data());
+    std::swap(macgrid.v().data(), v_next.data());
+}
+
+// simplified buoyancy: f_y = \alpha \rho
+void FluidSolver2D::addForces(float dt) {
+    constexpr float buoyancy = 1.0f;
+
+    for (int j = 1; j < ny_; ++j) {
+        for (int i = 0; i < nx_; ++i) {
+            float face_density = 0.5f * (density(i, j - 1) + density(i, j + 1));
+            macgrid.v()(i, j) += dt * buoyancy * face_density;
+        }
+    }
+}
+
+void FluidSolver2D::enforceBoundaryVelocity() {
+    for (int j = 0; j < ny_; ++j) {
+        macgrid.u()(0, j) = 0.0f;
+        macgrid.u()(nx_, j) = 0.0f;
+    }
+    for (int i = 0; i < nx_; ++i) {
+        macgrid.v()(i, 0) = 0.0f;
+        macgrid.v()(i, ny_) = 0.0f;
+    }
+}
+
 void FluidSolver2D::computeDivergence() {
     for (int i = 0; i < nx_; ++i) {
         for (int j = 0; j < ny_; ++j) {
@@ -90,7 +156,7 @@ void FluidSolver2D::solvePressure(float dt, int iterations) {
                 float right = macgrid.pressure()(std::clamp(i + 1, 0, nx_ - 1), j);
                 float down = macgrid.pressure()(i, std::clamp(j - 1, 0, ny_ - 1));
                 float up = macgrid.pressure()(i, std::clamp(j + 1, 0, ny_ - 1));
-                pressure_new(i, j) = (left + right + down + up - scale * divergence(i, j)) / 4.0;
+                pressure_new(i, j) = (left + right + down + up - scale * divergence(i, j)) / 4.0f;
             }
         }
         std::swap(pressure_new, macgrid.pressure());
@@ -118,13 +184,16 @@ void FluidSolver2D::testDivergence() {
 }
 
 void FluidSolver2D::step(float dt) {
-    advectDensity(dt);
+    advectVelocity(dt);
+    addForces(dt);
+    enforceBoundaryVelocity();
+
     computeDivergence();
     testDivergence();
-
     solvePressure(dt, 100);
     applyPressureGradient(dt);
-
-    computeDivergence();
+    computeDivergence(); // for comparison
     testDivergence();
+
+    advectDensity(dt);
 }
