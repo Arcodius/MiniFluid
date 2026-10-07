@@ -86,6 +86,78 @@ __global__ void advectVelocityKernel(
         grid_x, grid_y, grid_z);
 }
 
+__global__ void addVelocitySourceKernel(
+    GridView3D<float> v,
+    int nx,
+    int nz,
+    float v0) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= nx || k >= nz) {
+        return;
+    }
+
+    constexpr float radius = 4.0f;
+    const float center_x = 0.5f * static_cast<float>(nx);
+    const float center_z = 0.5f * static_cast<float>(nz);
+    const float dx = static_cast<float>(i) + 0.5f - center_x;
+    const float dz = static_cast<float>(k) + 0.5f - center_z;
+    const float distance_squared = dx * dx + dz * dz;
+    const float weight = expf(-distance_squared / (2.0f * radius * radius));
+
+    if (weight > 0.01f) {
+        v(i, 1, k) = v0 * weight;
+    }
+}
+
+__global__ void addDensitySourceKernel(
+    GridView3D<float> density,
+    int begin_x,
+    int begin_z,
+    int patch_nx,
+    int patch_nz,
+    float rho) {
+    const int patch_i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int patch_k = blockIdx.y * blockDim.y + threadIdx.y;
+    if (patch_i >= patch_nx || patch_k >= patch_nz) {
+        return;
+    }
+
+    const int i = begin_x + patch_i;
+    const int k = begin_z + patch_k;
+    density(i, 0, k) = rho;
+    if (density.ny > 1) {
+        density(i, 1, k) = rho;
+    }
+}
+
+__global__ void zeroUBoundaryKernel(GridView3D<float> u, int nx) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = blockIdx.y * blockDim.y + threadIdx.y;
+    if (j < u.ny && k < u.nz) {
+        u(0, j, k) = 0.0f;
+        u(nx, j, k) = 0.0f;
+    }
+}
+
+__global__ void zeroVBoundaryKernel(GridView3D<float> v, int ny) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int k = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i < v.nx && k < v.nz) {
+        v(i, 0, k) = 0.0f;
+        v(i, ny, k) = 0.0f;
+    }
+}
+
+__global__ void zeroWBoundaryKernel(GridView3D<float> w, int nz) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i < w.nx && j < w.ny) {
+        w(i, j, 0) = 0.0f;
+        w(i, j, nz) = 0.0f;
+    }
+}
+
 template<int Component>
 void launchAdvectVelocity(
     GridView3D<const float> u,
@@ -147,7 +219,68 @@ void CudaFluidSolver::advectVelocity(float dt) {
     std::swap(macgrid_.w(), w_next_);
 }
 
+void CudaFluidSolver::addVelocitySource(float v0) {
+    const dim3 threads(16, 16);
+    const dim3 blocks(
+        (macgrid_.nx() + threads.x - 1) / threads.x,
+        (macgrid_.nz() + threads.y - 1) / threads.y);
+    addVelocitySourceKernel<<<blocks, threads>>>(
+        macgrid_.v().view(), macgrid_.nx(), macgrid_.nz(), v0);
+    CHECK_CUDA(cudaGetLastError());
+}
 
+void CudaFluidSolver::addDensitySource(float rho) {
+    constexpr int half_width = 3;
+    const int center_x = (macgrid_.nx() + 1) / 2;
+    const int center_z = (macgrid_.nz() + 1) / 2;
+    const int begin_x = std::max(center_x - half_width, 0);
+    const int begin_z = std::max(center_z - half_width, 0);
+    const int end_x = std::min(center_x + half_width, density_.nx() - 1);
+    const int end_z = std::min(center_z + half_width, density_.nz() - 1);
+    if (begin_x > end_x || begin_z > end_z) {
+        return;
+    }
+
+    const int patch_nx = end_x - begin_x + 1;
+    const int patch_nz = end_z - begin_z + 1;
+    const dim3 threads(16, 16);
+    const dim3 blocks(
+        (patch_nx + threads.x - 1) / threads.x,
+        (patch_nz + threads.y - 1) / threads.y);
+    addDensitySourceKernel<<<blocks, threads>>>(
+        density_.view(), begin_x, begin_z, patch_nx, patch_nz, rho);
+    CHECK_CUDA(cudaGetLastError());
+}
+
+void CudaFluidSolver::addForces(float dt) {
+    
+}
+
+void CudaFluidSolver::enforceBoundaryVelocity() {
+    constexpr int tile = 16;
+    const dim3 threads(tile, tile);
+
+    const GridView3D<float> u = macgrid_.u().view();
+    const dim3 u_blocks(
+        (u.ny + tile - 1) / tile,
+        (u.nz + tile - 1) / tile);
+    zeroUBoundaryKernel<<<u_blocks, threads>>>(u, macgrid_.nx());
+    CHECK_CUDA(cudaGetLastError());
+
+    const GridView3D<float> v = macgrid_.v().view();
+    const dim3 v_blocks(
+        (v.nx + tile - 1) / tile,
+        (v.nz + tile - 1) / tile);
+    zeroVBoundaryKernel<<<v_blocks, threads>>>(v, macgrid_.ny());
+    CHECK_CUDA(cudaGetLastError());
+
+    const GridView3D<float> w = macgrid_.w().view();
+    const dim3 w_blocks(
+        (w.nx + tile - 1) / tile,
+        (w.ny + tile - 1) / tile);
+    zeroWBoundaryKernel<<<w_blocks, threads>>>(w, macgrid_.nz());
+    CHECK_CUDA(cudaGetLastError());
+}
 
 
 void CudaFluidSolver::step(float dt) {

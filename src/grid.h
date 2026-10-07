@@ -254,9 +254,9 @@ public:
         return GridView3D<const float>(storage_.data(), nx_, ny_, nz_);
     }
 
-    int width() const noexcept { return nx_; }
-    int height() const noexcept { return ny_; }
-    int depth() const noexcept { return nz_; }
+    int nx() const noexcept { return nx_; }
+    int ny() const noexcept { return ny_; }
+    int nz() const noexcept { return nz_; }
     size_t size() const noexcept { return storage_.size(); }
 
     void upload(const Grid3D& source) {
