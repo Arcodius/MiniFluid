@@ -9,6 +9,9 @@ struct Vec2 {
 
 struct Vec3 {
     float x, y, z;
+
+    explicit Vec3(float v) : x(v), y(v), z(v) {}
+    Vec3(float a, float b, float c) : x(a), y(b), z(c) {}
 };
 
 class Grid2D {

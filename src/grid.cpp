@@ -73,7 +73,7 @@ Vec3 MacGrid3D::cellVelocity(int i, int j, int k) {
     const float uc = 0.5f * (u_(i, j, k) + u_(i + 1, j, k));
     const float vc = 0.5f * (v_(i, j, k) + v_(i, j + 1, k));
     const float wc = 0.5f * (w_(i, j, k) + w_(i, j, k + 1));
-    return {uc, vc, wc};
+    return Vec3(uc, vc, wc);
 }
 
 // Sample velocity with real coordinates
@@ -87,7 +87,7 @@ Vec3 MacGrid3D::sampleVelocity(float x, float y, float z) const {
     const float w = sampleTrilinear(
         w_, x * inv_h - 0.5f, y * inv_h - 0.5f, z * inv_h);
 
-    return {u, v, w};
+    return Vec3(u, v, w);
 }
 
 // Incompressible condition:

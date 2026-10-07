@@ -1,4 +1,4 @@
-#include "fluid_solver.h"
+#include "fluid_solver_2d.h"
 
 void FluidSolver2D::initDensity() {
     // // Simple gaussian blob

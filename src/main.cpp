@@ -5,7 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-#include "fluid_solver.h"
+#include "fluid_solver_2d.h"
 
 std::vector<uint8_t> gFrameBuffer;
 SDL_Window* gSDLWindow;
