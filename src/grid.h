@@ -140,3 +140,14 @@ public:
     float divergenceAt(int i, int j, int k);
     void applyPressureGradient(float dt);
 };
+
+template<class T>
+struct GridView3D {
+    T* data;
+    int nx, ny, nz;
+
+};
+
+class DeviceMacGrid3D {
+
+};
