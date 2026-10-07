@@ -10,6 +10,7 @@ private:
     DeviceGrid3D v_next_;
     DeviceGrid3D w_next_;
     DeviceGrid3D density_;
+    DeviceGrid3D divergence_;
     DeviceGrid3D density_next_;
     DeviceGrid3D pressure_next_;
 public:

@@ -86,6 +86,24 @@ __global__ void advectVelocityKernel(
         grid_x, grid_y, grid_z);
 }
 
+template<int Component>
+void launchAdvectVelocity(
+    GridView3D<const float> u,
+    GridView3D<const float> v,
+    GridView3D<const float> w,
+    GridView3D<float> output,
+    float h,
+    float dt) {
+    const dim3 threads(8, 8, 4);
+    const dim3 blocks(
+        (output.nx + threads.x - 1) / threads.x,
+        (output.ny + threads.y - 1) / threads.y,
+        (output.nz + threads.z - 1) / threads.z);
+    advectVelocityKernel<Component><<<blocks, threads>>>(
+        u, v, w, output, h, dt);
+    CHECK_CUDA(cudaGetLastError());
+}
+
 __global__ void addVelocitySourceKernel(
     GridView3D<float> v,
     int nx,
@@ -158,22 +176,21 @@ __global__ void zeroWBoundaryKernel(GridView3D<float> w, int nz) {
     }
 }
 
-template<int Component>
-void launchAdvectVelocity(
+__global__ void computeDivergenceKernel(
+    GridView3D<float> d,
     GridView3D<const float> u,
     GridView3D<const float> v,
     GridView3D<const float> w,
-    GridView3D<float> output,
-    float h,
-    float dt) {
-    const dim3 threads(8, 8, 4);
-    const dim3 blocks(
-        (output.nx + threads.x - 1) / threads.x,
-        (output.ny + threads.y - 1) / threads.y,
-        (output.nz + threads.z - 1) / threads.z);
-    advectVelocityKernel<Component><<<blocks, threads>>>(
-        u, v, w, output, h, dt);
-    CHECK_CUDA(cudaGetLastError());
+    float h) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= d.nx || j >= d.ny || k >= d.nz) return;
+
+    const float du = u(i + 1, j, k) - u(i, j, k);
+    const float dv = v(i, j + 1, k) - v(i, j, k);
+    const float dw = w(i, j, k + 1) - w(i, j, k);
+    d(i, j, k) = (du + dv + dw) / h;
 }
 
 } // namespace
@@ -184,6 +201,7 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
       v_next_(nx, ny + 1, nz),
       w_next_(nx, ny, nz + 1),
       density_(nx, ny, nz),
+      divergence_(nx, ny, nz),
       density_next_(nx, ny, nz),
       pressure_next_(nx, ny, nz) {
     initDensity();
@@ -253,7 +271,7 @@ void CudaFluidSolver::addDensitySource(float rho) {
 }
 
 void CudaFluidSolver::addForces(float dt) {
-    
+
 }
 
 void CudaFluidSolver::enforceBoundaryVelocity() {
@@ -282,6 +300,23 @@ void CudaFluidSolver::enforceBoundaryVelocity() {
     CHECK_CUDA(cudaGetLastError());
 }
 
+void CudaFluidSolver::computeDivergence() {
+    const dim3 threads(8, 8, 4);
+    const GridView3D<float> d = divergence_.view();
+    const dim3 blocks(
+        (d.nx + threads.x - 1) / threads.x,
+        (d.ny + threads.y - 1) / threads.y,
+        (d.nz + threads.z - 1) / threads.z);
+
+    const auto& macgrid = static_cast<const DeviceMacGrid3D&>(macgrid_);
+    computeDivergenceKernel<<<blocks, threads>>>(
+        d,
+        macgrid.u().view(),
+        macgrid.v().view(),
+        macgrid.w().view(),
+        macgrid.spacing());
+    CHECK_CUDA(cudaGetLastError());
+}
 
 void CudaFluidSolver::step(float dt) {
     advectVelocity(dt);
