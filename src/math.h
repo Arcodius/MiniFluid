@@ -6,6 +6,7 @@
 #include <math.h>
 
 class Grid2D;
+class Grid3D;
 
 inline float normalize(float value, float minValue, float maxValue) {
     if (maxValue <= minValue)
@@ -31,3 +32,4 @@ inline float pix2sim(int pix, int display_res, int sim_res) {
 }
 
 float sampleBilinear(const Grid2D& grid, float gx, float gy);
+float sampleTrilinear(const Grid3D& grid, float gx, float gy, float gz);
