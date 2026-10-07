@@ -175,21 +175,52 @@ void FluidSolver3D::solvePressure(float dt, int iterations){
     float initial_max_update = 0.0f;
     for (int iter = 0; iter < iterations; ++iter) {
         float max_update = 0.0f;
+        const float* pressure = macgrid.pressure().data().data();
+        float* pressure_next = pressure_next_.data().data();
+        const int y_stride = nx_;
+        const int z_stride = nx_ * ny_;
+        const auto update_boundary_cell = [&](int i, int j, int k) {
+            const int index = i + nx_ * (j + ny_ * k);
+            const float updated_pressure = (
+                pressure[index + (i > 0 ? -1 : 0)]
+                + pressure[index + (i + 1 < nx_ ? 1 : 0)]
+                + pressure[index + (j > 0 ? -y_stride : 0)]
+                + pressure[index + (j + 1 < ny_ ? y_stride : 0)]
+                + pressure[index + (k > 0 ? -z_stride : 0)]
+                + pressure[index + (k + 1 < nz_ ? z_stride : 0)]
+                - scale * divergence(i, j, k)) / 6.0f;
+            max_update = std::max(max_update, std::abs(updated_pressure - pressure[index]));
+            pressure_next[index] = updated_pressure;
+        };
+
         for (int k = 0; k < nz_; ++k) {
             for (int j = 0; j < ny_; ++j) {
-                for (int i = 0; i < nx_; ++i) {
-                    float left = macgrid.pressure()(std::clamp(i - 1, 0, nx_ - 1), j, k);
-                    float right = macgrid.pressure()(std::clamp(i + 1, 0, nx_ - 1), j, k);
-                    float down = macgrid.pressure()(i, std::clamp(j - 1, 0, ny_ - 1), k);
-                    float up = macgrid.pressure()(i, std::clamp(j + 1, 0, ny_ - 1), k);
-                    float back = macgrid.pressure()(i, j, std::clamp(k - 1, 0, nz_ - 1));
-                    float front = macgrid.pressure()(i, j, std::clamp(k + 1, 0, nz_ - 1));
+                if (k == 0 || k == nz_ - 1 || j == 0 || j == ny_ - 1) {
+                    for (int i = 0; i < nx_; ++i) {
+                        update_boundary_cell(i, j, k);
+                    }
+                } else {
+                    update_boundary_cell(0, j, k);
+                    if (nx_ > 1) {
+                        update_boundary_cell(nx_ - 1, j, k);
+                    }
+                }
+            }
+        }
+
+        for (int k = 1; k < nz_ - 1; ++k) {
+            for (int j = 1; j < ny_ - 1; ++j) {
+                int index = 1 + nx_ * (j + ny_ * k);
+                for (int i = 1; i < nx_ - 1; ++i, ++index) {
                     const float updated_pressure =
-                        (left + right + down + up + back + front - scale * divergence(i, j, k)) / 6.0f;
+                        (pressure[index - 1] + pressure[index + 1]
+                         + pressure[index - y_stride] + pressure[index + y_stride]
+                         + pressure[index - z_stride] + pressure[index + z_stride]
+                         - scale * divergence(i, j, k)) / 6.0f;
                     max_update = std::max(
                         max_update,
-                        std::abs(updated_pressure - macgrid.pressure()(i, j, k)));
-                    pressure_next_(i, j, k) = updated_pressure;
+                        std::abs(updated_pressure - pressure[index]));
+                    pressure_next[index] = updated_pressure;
                 }
             }
         }
@@ -198,6 +229,7 @@ void FluidSolver3D::solvePressure(float dt, int iterations){
             initial_max_update = max_update;
         }
         if (max_update <= initial_max_update * 1.0e-4f) {
+            printf("Early break at: %d/100", iter);
             break;
         }
     }

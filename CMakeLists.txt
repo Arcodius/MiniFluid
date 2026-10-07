@@ -17,3 +17,5 @@ add_custom_command(TARGET MiniFluid POST_BUILD
     $<TARGET_FILE:SDL3::SDL3>
     $<TARGET_FILE_DIR:MiniFluid>
 )
+
+target_compile_options(MiniFluid PRIVATE "/O2") 

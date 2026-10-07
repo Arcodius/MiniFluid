@@ -48,8 +48,14 @@ public:
     Grid3D(int nx, int ny, int nz, float h): nx_(nx), ny_(ny), nz_(nz), h_(h), data_(nx * ny * nz, 0.0f) {}
     Grid3D(int nx, int ny, int nz, float h, float value): nx_(nx), ny_(ny), nz_(nz), h_(h), data_(nx * ny * nz, value) {}
 
-    float& operator()(int i, int j, int k);
-    float operator()(int i, int j, int k) const;
+    inline float& operator() (int i, int j, int k) {
+        return data_[i + nx_ * (j + ny_ * k)];
+    }
+
+    inline float operator() (int i, int j, int k) const {
+        return data_[i + nx_ * (j + ny_ * k)];
+    }
+
     std::vector<float>& data() { return data_; }
     const std::vector<float>& data() const { return data_; }
     int width() const { return nx_; }

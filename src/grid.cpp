@@ -15,19 +15,6 @@ float Grid2D::operator() (int i, int j) const {
     return data_[i + nx_ * j];
 }
 
-float& Grid3D::operator() (int i, int j, int k) {
-    assert(i >= 0 && i < nx_);
-    assert(j >= 0 && j < ny_);
-    assert(k >= 0 && k < nz_);
-    return data_[i + nx_ * (j + ny_ * k)];
-}
-
-float Grid3D::operator() (int i, int j, int k) const {
-    assert(i >= 0 && i < nx_);
-    assert(j >= 0 && j < ny_);
-    assert(k >= 0 && k < nz_);
-    return data_[i + nx_ * (j + ny_ * k)];
-}
 
 Vec2 MacGrid2D::cellVelocity(int i, int j) {
     const float uc = 0.5f * (u_(i, j) + u_(i + 1, j));
