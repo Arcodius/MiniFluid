@@ -1,6 +1,6 @@
 #pragma once
 #include "grid.h"
-#include "math.h"
+#include "fluid_math.h"
 
 class FluidSolver2D
 {

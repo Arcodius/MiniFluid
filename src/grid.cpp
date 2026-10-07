@@ -1,6 +1,6 @@
 #include "grid.h"
 
-#include "math.h"
+#include "fluid_math.h"
 #include <cassert>
 
 float& Grid2D::operator() (int i, int j) {

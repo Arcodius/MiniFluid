@@ -19,3 +19,22 @@ add_custom_command(TARGET MiniFluid POST_BUILD
 )
 
 target_compile_options(MiniFluid PRIVATE "/O2") 
+
+option(MINIFLUID_BUILD_CUDA_EXAMPLE "Build the CUDA divergence example" OFF)
+
+if(MINIFLUID_BUILD_CUDA_EXAMPLE)
+    enable_language(CUDA)
+
+    add_executable(cuda_divergence_check
+        src/cuda/divergence_check.cpp
+        src/cuda/divergence_cuda.cu
+        src/grid.cpp
+        src/math.cpp
+    )
+    target_include_directories(cuda_divergence_check PRIVATE src)
+    set_target_properties(cuda_divergence_check PROPERTIES
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON
+        CUDA_RUNTIME_LIBRARY Shared
+    )
+endif()

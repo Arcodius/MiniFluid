@@ -1,4 +1,4 @@
-#include "math.h"
+#include "fluid_math.h"
 #include "grid.h"
 
 // input: grid-index coordinates
