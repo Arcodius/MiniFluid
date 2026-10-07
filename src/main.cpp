@@ -5,7 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-#include "fluid_solver_2d.h"
+#include "fluid_solver_3d.h"
 
 std::vector<uint8_t> gFrameBuffer;
 SDL_Window* gSDLWindow;
@@ -14,13 +14,16 @@ SDL_Texture* gSimTexture;
 static int gDone;
 const int WINDOW_WIDTH = 1024 / 2;
 const int WINDOW_HEIGHT = 1024 / 2;
-const int SIM_WIDTH = 128;
-const int SIM_HEIGHT = 128;
+const int SIM_WIDTH = 64;
+const int SIM_HEIGHT = 64;
+const int SIM_DEPTH = 32;
 
-FluidSolver2D solver = FluidSolver2D(SIM_WIDTH, SIM_HEIGHT, 1.0f / SIM_WIDTH, 1.0f);
+FluidSolver3D solver = FluidSolver3D(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
 
 bool SMOOTH_RENDERING = true;
 bool SHOW_DIV = false;
+bool PAUSE = false;
+int SLICE_DEPTH = SIM_DEPTH / 2;
 
 enum class DisplayQuantity {
     Density,
@@ -52,6 +55,10 @@ bool update() {
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_ESCAPE) {
             return false;
         }
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_SPACE) {
+            PAUSE = !PAUSE;
+            return true;
+        }
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_S) {
             SMOOTH_RENDERING = !SMOOTH_RENDERING;
             SDL_SetTextureScaleMode(gSimTexture, SMOOTH_RENDERING ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
@@ -61,18 +68,26 @@ bool update() {
             gDisplayQuantity = (gDisplayQuantity == DisplayQuantity::Divergence) ? DisplayQuantity::Density : DisplayQuantity::Divergence;
             return true;
         }
+        if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_UP) {
+            SLICE_DEPTH++;
+            SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
+        }
+        if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_DOWN) {
+            SLICE_DEPTH--;
+            SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
+        }
     }
     return true;
 }
 
 
 
-float displayValue(DisplayQuantity quantity, int i, int j) {
+float displayValue(DisplayQuantity quantity, int i, int j, int k) {
     switch (quantity) {
         case DisplayQuantity::Density:
-            return solver.density(i, j);
+            return solver.density(i, j, k);
         case DisplayQuantity::Divergence:
-            return solver.divergence(i, j);
+            return solver.divergence(i, j, k);
         default:
             return 0.0f;
     }
@@ -80,10 +95,10 @@ float displayValue(DisplayQuantity quantity, int i, int j) {
 
 void render(Uint64 aTicks) {
     // project data to buffer frame
-    auto [nx, ny] = solver.getSize();
+    auto [nx, ny, nz] = solver.getSize();
     for (int j = 0, c = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i, ++c) {
-            const float value = displayValue(gDisplayQuantity, i, j);
+            const float value = displayValue(gDisplayQuantity, i, j, SLICE_DEPTH);
             float intensity;
             if (gDisplayQuantity == DisplayQuantity::Density) {
                 intensity = normalize(value, 0.0f, 1.0f);
