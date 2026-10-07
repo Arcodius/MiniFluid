@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
-int main() {
+int main_check_divergence() {
     constexpr int nx = 17;
     constexpr int ny = 11;
     constexpr int nz = 7;

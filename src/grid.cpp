@@ -115,3 +115,4 @@ void MacGrid3D::applyPressureGradient(float dt) {
         }
     }
 }
+
