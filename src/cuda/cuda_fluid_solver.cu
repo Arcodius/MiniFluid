@@ -193,6 +193,105 @@ __global__ void computeDivergenceKernel(
     d(i, j, k) = (du + dv + dw) / h;
 }
 
+__global__ void solvePressureKernel(
+    GridView3D<const float> pressure,
+    GridView3D<const float> divergence,
+    GridView3D<float> pressure_next,
+    float scale) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= pressure.nx || j >= pressure.ny || k >= pressure.nz) {
+        return;
+    }
+
+    const int i_left = max(i - 1, 0);
+    const int i_right = min(i + 1, pressure.nx - 1);
+    const int j_down = max(j - 1, 0);
+    const int j_up = min(j + 1, pressure.ny - 1);
+    const int k_back = max(k - 1, 0);
+    const int k_front = min(k + 1, pressure.nz - 1);
+
+    pressure_next(i, j, k) = (
+        pressure(i_left, j, k) + pressure(i_right, j, k)
+        + pressure(i, j_down, k) + pressure(i, j_up, k)
+        + pressure(i, j, k_back) + pressure(i, j, k_front)
+        - scale * divergence(i, j, k)) / 6.0f;
+}
+
+template<int Component>
+__global__ void pressureGradientKernel(
+    GridView3D<float> velocity,
+    GridView3D<const float> pressure,
+    float inv_rho,
+    float inv_h,
+    float dt) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= velocity.nx || j >= velocity.ny || k >= velocity.nz) {
+        return;
+    }
+
+    float pressure_difference;
+    if constexpr (Component == 0) {
+        if (i == 0 || i >= pressure.nx) return;
+        pressure_difference = pressure(i, j, k) - pressure(i - 1, j, k);
+    } else if constexpr (Component == 1) {
+        if (j == 0 || j >= pressure.ny) return;
+        pressure_difference = pressure(i, j, k) - pressure(i, j - 1, k);
+    } else {
+        if (k == 0 || k >= pressure.nz) return;
+        pressure_difference = pressure(i, j, k) - pressure(i, j, k - 1);
+    }
+
+    velocity(i, j, k) -= dt * inv_rho * pressure_difference * inv_h;
+}
+
+template<int Component>
+void launchPressureGradientKernel(
+    GridView3D<float> velocity,
+    GridView3D<const float> pressure,
+    float inv_rho, float inv_h, float dt) {
+    const dim3 threads(8, 8, 4);
+    const dim3 blocks(
+        (velocity.nx + threads.x - 1) / threads.x,
+        (velocity.ny + threads.y - 1) / threads.y,
+        (velocity.nz + threads.z - 1) / threads.z);
+    pressureGradientKernel<Component><<<blocks, threads>>>(
+        velocity, pressure, inv_rho, inv_h, dt);
+    CHECK_CUDA(cudaGetLastError());
+}
+
+__global__ void advectDensityKernel(
+    GridView3D<const float> density, GridView3D<float> density_next, 
+    GridView3D<const float> u, GridView3D<const float> v, GridView3D<const float> w,
+    float dt, float h, float inv_h) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= density.nx || j >= density.ny || k >= density.nz) {
+        return;
+    }
+
+    const float x = (i + 0.5f) * h;
+    const float y = (j + 0.5f) * h;
+    const float z = (k + 0.5f) * h;
+
+    float velocity_x;
+    float velocity_y;
+    float velocity_z;
+    sampleVelocity(u, v, w, x, y, z, inv_h, velocity_x, velocity_y, velocity_z);
+    const float dep_x = x - dt * velocity_x;
+    const float dep_y = y - dt * velocity_y;
+    const float dep_z = z - dt * velocity_z;
+
+    const float dep_i = dep_x * inv_h - 0.5f;
+    const float dep_j = dep_y * inv_h - 0.5f;
+    const float dep_k = dep_z * inv_h - 0.5f;
+    density_next(i, j, k) = sampleTrilinear(density, dep_i, dep_j, dep_k);
+}
+
 } // namespace
 
 CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
@@ -211,7 +310,8 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
 CudaFluidSolver::~CudaFluidSolver() = default;
 
 void CudaFluidSolver::initDensity() {
-
+    const GridView3D<float> density = density_.view();
+    CHECK_CUDA(cudaMemset(density.data, 0, density.size() * sizeof(float)));
 }
 void CudaFluidSolver::initVelocity(){
     macgrid_host_.u().fill(0.0f);
@@ -316,6 +416,59 @@ void CudaFluidSolver::computeDivergence() {
         macgrid.w().view(),
         macgrid.spacing());
     CHECK_CUDA(cudaGetLastError());
+}
+
+void CudaFluidSolver::solvePressure(float dt, int iterations) {
+    const GridView3D<float> initial_pressure = macgrid_.pressure().view();
+    CHECK_CUDA(cudaMemset(initial_pressure.data, 0, initial_pressure.size() * sizeof(float)));
+
+    const float scale = macgrid_.spacing() * macgrid_.spacing() * macgrid_.rho() / dt;
+    const dim3 threads(8, 8, 4);
+    const dim3 blocks(
+        (initial_pressure.nx + threads.x - 1) / threads.x,
+        (initial_pressure.ny + threads.y - 1) / threads.y,
+        (initial_pressure.nz + threads.z - 1) / threads.z);
+    const auto divergence = static_cast<const DeviceGrid3D&>(divergence_).view();
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        const auto pressure = static_cast<const DeviceGrid3D&>(macgrid_.pressure()).view();
+        solvePressureKernel<<<blocks, threads>>>(pressure, divergence, pressure_next_.view(), scale);
+        CHECK_CUDA(cudaGetLastError());
+        std::swap(macgrid_.pressure(), pressure_next_);
+    }
+}
+
+void CudaFluidSolver::applyPressureGradient(float dt) {
+    const float inv_rho = 1.0f / macgrid_.rho();
+    const float inv_h = 1.0f / macgrid_.spacing();
+    const auto& macgrid = static_cast<const DeviceMacGrid3D&>(macgrid_);
+    const auto pressure = macgrid.pressure().view();
+
+    launchPressureGradientKernel<0>(
+        macgrid_.u().view(), pressure, inv_rho, inv_h, dt);
+    launchPressureGradientKernel<1>(
+        macgrid_.v().view(), pressure, inv_rho, inv_h, dt);
+    launchPressureGradientKernel<2>(
+        macgrid_.w().view(), pressure, inv_rho, inv_h, dt);
+}
+
+void CudaFluidSolver::advectDensity(float dt) {
+    const float h = macgrid_.spacing();
+    const float inv_h = 1.0f / h;
+    const dim3 threads(8, 8, 4);
+    const DeviceGrid3D& density = static_cast<const DeviceGrid3D&>(density_);
+    const dim3 blocks(
+        (density_.nx() + threads.x - 1) / threads.x,
+        (density_.ny() + threads.y - 1) / threads.y,
+        (density_.nz() + threads.z - 1) / threads.z);
+    const auto& host_view = static_cast<const DeviceMacGrid3D&>(macgrid_);
+    const auto u = host_view.u().view();
+    const auto v = host_view.v().view();
+    const auto w = host_view.w().view();
+    advectDensityKernel<<<blocks, threads>>>(
+        density.view(), density_next_.view(), u, v, w, dt, h, inv_h);
+    CHECK_CUDA(cudaGetLastError());
+    std::swap(density_, density_next_);
 }
 
 void CudaFluidSolver::step(float dt) {
