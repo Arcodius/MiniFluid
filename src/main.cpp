@@ -1,6 +1,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -12,6 +13,7 @@ SDL_Window* gSDLWindow;
 SDL_Renderer* gSDLRenderer;
 SDL_Texture* gSimTexture;
 static int gDone;
+static bool gScreenshotRequested;
 const int WINDOW_WIDTH = 1024 / 2;
 const int WINDOW_HEIGHT = 1024 / 2;
 const int SIM_WIDTH = 64;
@@ -69,6 +71,10 @@ bool update() {
             gDisplayQuantity = (gDisplayQuantity == DisplayQuantity::Divergence) ? DisplayQuantity::Density : DisplayQuantity::Divergence;
             return true;
         }
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_P) {
+            gScreenshotRequested = true;
+            return true;
+        }
         if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_UP) {
             SLICE_DEPTH++;
             SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
@@ -120,6 +126,36 @@ void render(Uint64 aTicks) {
     SDL_SetRenderDrawColor(gSDLRenderer, 0, 0, 0, 255);
     SDL_RenderClear(gSDLRenderer);
     SDL_RenderTexture(gSDLRenderer, gSimTexture, nullptr, &dst_rect); // use all texture
+
+    if (gScreenshotRequested) {
+        gScreenshotRequested = false;
+        SDL_Surface* screenshot = SDL_RenderReadPixels(gSDLRenderer, nullptr);
+        if (!screenshot) {
+            SDL_Log("Failed to capture screenshot: %s", SDL_GetError());
+        } else {
+            const char* basePath = SDL_GetBasePath();
+            if (!basePath) {
+                SDL_Log("Failed to get application directory: %s", SDL_GetError());
+            } else {
+                std::string screenshotPath;
+                for (Uint64 index = 1;; ++index) {
+                    screenshotPath = std::string(basePath) + "screenshot_" + std::to_string(index) + ".bmp";
+                    SDL_PathInfo pathInfo;
+                    if (!SDL_GetPathInfo(screenshotPath.c_str(), &pathInfo)) {
+                        break;
+                    }
+                }
+
+                if (!SDL_SaveBMP(screenshot, screenshotPath.c_str())) {
+                    SDL_Log("Failed to save screenshot to %s: %s", screenshotPath.c_str(), SDL_GetError());
+                } else {
+                    SDL_Log("Screenshot saved to %s", screenshotPath.c_str());
+                }
+            }
+            SDL_DestroySurface(screenshot);
+        }
+    }
+
     SDL_RenderPresent(gSDLRenderer); // Future need: change to SDL_LockTexture
 }
 
