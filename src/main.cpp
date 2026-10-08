@@ -5,7 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-#include "fluid_solver_3d.h"
+#include "cuda/cuda_fluid_solver.h"
 
 std::vector<uint8_t> gFrameBuffer;
 SDL_Window* gSDLWindow;
@@ -18,7 +18,8 @@ const int SIM_WIDTH = 64;
 const int SIM_HEIGHT = 64;
 const int SIM_DEPTH = 32;
 
-FluidSolver3D solver = FluidSolver3D(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
+CudaFluidSolver solver = CudaFluidSolver(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
+std::vector<float> gDisplaySlice(SIM_WIDTH * SIM_HEIGHT);
 
 bool SMOOTH_RENDERING = true;
 bool SHOW_DIV = false;
@@ -82,23 +83,18 @@ bool update() {
 
 
 
-float displayValue(DisplayQuantity quantity, int i, int j, int k) {
-    switch (quantity) {
-        case DisplayQuantity::Density:
-            return solver.density(i, j, k);
-        case DisplayQuantity::Divergence:
-            return solver.divergence(i, j, k);
-        default:
-            return 0.0f;
-    }
-}
-
 void render(Uint64 aTicks) {
-    // project data to buffer frame
-    auto [nx, ny, nz] = solver.getSize();
+    const int nx = solver.nx();
+    const int ny = solver.ny();
+    if (gDisplayQuantity == DisplayQuantity::Density) {
+        solver.copyDensitySlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
+    } else {
+        solver.copyDivergenceSlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
+    }
+
     for (int j = 0, c = 0; j < ny; ++j) {
         for (int i = 0; i < nx; ++i, ++c) {
-            const float value = displayValue(gDisplayQuantity, i, j, SLICE_DEPTH);
+            const float value = gDisplaySlice[c];
             float intensity;
             if (gDisplayQuantity == DisplayQuantity::Density) {
                 intensity = normalize(value, 0.0f, 1.0f);
@@ -138,20 +134,26 @@ void loop() {
     prev_ticks = cur_ticks;
 
     frame_dt = std::min(frame_dt, 0.1);
-    accumulator += frame_dt;
     if (!update()) {
         gDone = 1;
         return;
-    } 
-    int steps = 0;
-    while (accumulator >= simulation_dt && steps < max_step_per_frame) {
-        solver.step(static_cast<float>(simulation_dt));
-        accumulator -= simulation_dt;
-        steps++;
     }
-    if (steps == max_step_per_frame) {
+
+    if (PAUSE) {
         accumulator = 0.0;
+    } else {
+        accumulator += frame_dt;
+        int steps = 0;
+        while (accumulator >= simulation_dt && steps < max_step_per_frame) {
+            solver.step(static_cast<float>(simulation_dt));
+            accumulator -= simulation_dt;
+            steps++;
+        }
+        if (steps == max_step_per_frame) {
+            accumulator = 0.0;
+        }
     }
+
     render(cur_ticks);
 }
 

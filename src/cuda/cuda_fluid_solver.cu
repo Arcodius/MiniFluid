@@ -5,6 +5,30 @@
 
 namespace {
 
+void clearDeviceGrid(DeviceGrid3D& grid) {
+    const GridView3D<float> view = grid.view();
+    CHECK_CUDA(cudaMemset(view.data, 0, view.size() * sizeof(float)));
+}
+
+void copySliceToHost(
+    GridView3D<const float> grid,
+    int k,
+    float* destination,
+    size_t element_count) {
+    const size_t slice_size = static_cast<size_t>(grid.nx) * grid.ny;
+    if (k < 0 || k >= grid.nz) {
+        throw std::out_of_range("Slice index is outside the grid");
+    }
+    if (destination == nullptr || element_count != slice_size) {
+        throw std::invalid_argument("Destination size does not match the grid slice");
+    }
+
+    const size_t offset = static_cast<size_t>(k) * slice_size;
+    CHECK_CUDA(cudaMemcpy(
+        destination, grid.data + offset, slice_size * sizeof(float),
+        cudaMemcpyDeviceToHost));
+}
+
 __device__ float clampCoordinate(float coordinate, int extent) {
     return fminf(fmaxf(coordinate, 0.0f), static_cast<float>(extent - 1));
 }
@@ -295,7 +319,7 @@ __global__ void advectDensityKernel(
 } // namespace
 
 CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
-    : macgrid_host_(nx, ny, nz, h, rho), macgrid_(nx, ny, nz, h, rho),
+    : macgrid_(nx, ny, nz, h, rho),
       u_next_(nx + 1, ny, nz),
       v_next_(nx, ny + 1, nz),
       w_next_(nx, ny, nz + 1),
@@ -305,19 +329,32 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
       pressure_next_(nx, ny, nz) {
     initDensity();
     initVelocity();
+    clearDeviceGrid(divergence_);
 }
 
 CudaFluidSolver::~CudaFluidSolver() = default;
 
-void CudaFluidSolver::initDensity() {
-    const GridView3D<float> density = density_.view();
-    CHECK_CUDA(cudaMemset(density.data, 0, density.size() * sizeof(float)));
+void CudaFluidSolver::copyDensitySlice(
+    int k, float* destination, size_t element_count) const {
+    copySliceToHost(
+        static_cast<const DeviceGrid3D&>(density_).view(),
+        k, destination, element_count);
 }
-void CudaFluidSolver::initVelocity(){
-    macgrid_host_.u().fill(0.0f);
-    macgrid_host_.v().fill(0.0f);
-    macgrid_host_.w().fill(0.0f);
-    macgrid_.upload(macgrid_host_);
+
+void CudaFluidSolver::copyDivergenceSlice(
+    int k, float* destination, size_t element_count) const {
+    copySliceToHost(
+        static_cast<const DeviceGrid3D&>(divergence_).view(),
+        k, destination, element_count);
+}
+
+void CudaFluidSolver::initDensity() {
+    clearDeviceGrid(density_);
+}
+void CudaFluidSolver::initVelocity() {
+    clearDeviceGrid(macgrid_.u());
+    clearDeviceGrid(macgrid_.v());
+    clearDeviceGrid(macgrid_.w());
 }
 
 

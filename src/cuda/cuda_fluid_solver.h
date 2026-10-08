@@ -3,7 +3,6 @@
 
 class CudaFluidSolver {
 private:
-    MacGrid3D macgrid_host_;
     DeviceMacGrid3D macgrid_;
 
     DeviceGrid3D u_next_;
@@ -16,6 +15,13 @@ private:
 public:
     CudaFluidSolver(int nx, int ny, int nz, float h, float rho);
     ~CudaFluidSolver();
+
+    int nx() const noexcept { return macgrid_.nx(); }
+    int ny() const noexcept { return macgrid_.ny(); }
+    int nz() const noexcept { return macgrid_.nz(); }
+
+    void copyDensitySlice(int k, float* destination, size_t element_count) const;
+    void copyDivergenceSlice(int k, float* destination, size_t element_count) const;
 
     void initDensity();
     void initVelocity();
