@@ -31,9 +31,9 @@ void write_to_log(const std::string& kernel_name, float ms);
     } while (false)
 #define TIME(call) \
     do {  \
-        auto start = std::chrono::system_clock::now();              \
+        auto start = std::chrono::high_resolution_clock::now();              \
         call;   \
-        auto end = std::chrono::system_clock::now();\
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);\
-        write_to_log(#call, duration);\
+        auto end = std::chrono::high_resolution_clock::now();\
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);\
+        write_to_log(#call, static_cast<float>(duration.count()));\
     } while (false)

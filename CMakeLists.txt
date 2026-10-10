@@ -22,8 +22,8 @@ target_link_libraries(MiniFluid PRIVATE SDL3::SDL3)
 set_target_properties(MiniFluid PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 
 # 4. 优化选项（MSVC 风格，跨平台可以写成 $<$<CXX_COMPILER_ID:MSVC>:/O2>）
-target_compile_options(MiniFluid PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/O2>)
-target_link_options(MiniFluid PRIVATE $<$<CONFIG:RelWithDebInfo>:/PROFILE>)
+# target_compile_options(MiniFluid PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/O2>)
+# target_link_options(MiniFluid PRIVATE $<$<CONFIG:RelWithDebInfo>:/PROFILE>)
 
 # 5. POST_BUILD 自动化拷贝动态库
 add_custom_command(TARGET MiniFluid POST_BUILD

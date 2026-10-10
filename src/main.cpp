@@ -181,7 +181,7 @@ void loop() {
         accumulator += frame_dt;
         int steps = 0;
         while (accumulator >= simulation_dt && steps < max_step_per_frame) {
-            solver.step(static_cast<float>(simulation_dt));
+            TIME(solver.step(static_cast<float>(simulation_dt)));
             accumulator -= simulation_dt;
             steps++;
         }
@@ -190,7 +190,7 @@ void loop() {
         }
     }
 
-    render(cur_ticks);
+    TIME(render(cur_ticks));
 }
 
 int main(int argc, char** argv) {
