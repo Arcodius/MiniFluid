@@ -7,7 +7,7 @@ namespace {
 
 void clearDeviceGrid(DeviceGrid3D& grid) {
     const GridView3D<float> view = grid.view();
-    CHECK_CUDA(cudaMemset(view.data, 0, view.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemset(view.data, 0, view.size() * sizeof(float)));
 }
 
 void copySliceToHost(
@@ -24,7 +24,7 @@ void copySliceToHost(
     }
 
     const size_t offset = static_cast<size_t>(k) * slice_size;
-    CHECK_CUDA(cudaMemcpy(
+    CUDA_CHECK(cudaMemcpy(
         destination, grid.data + offset, slice_size * sizeof(float),
         cudaMemcpyDeviceToHost));
 }
@@ -125,7 +125,7 @@ void launchAdvectVelocity(
         (output.nz + threads.z - 1) / threads.z);
     advectVelocityKernel<Component><<<blocks, threads>>>(
         u, v, w, output, h, dt);
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void addVelocitySourceKernel(
@@ -284,7 +284,7 @@ void launchPressureGradientKernel(
         (velocity.nz + threads.z - 1) / threads.z);
     pressureGradientKernel<Component><<<blocks, threads>>>(
         velocity, pressure, inv_rho, inv_h, dt);
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 __global__ void advectDensityKernel(
@@ -381,7 +381,7 @@ void CudaFluidSolver::addVelocitySource(float v0) {
         (macgrid_.nz() + threads.y - 1) / threads.y);
     addVelocitySourceKernel<<<blocks, threads>>>(
         macgrid_.v().view(), macgrid_.nx(), macgrid_.nz(), v0);
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void CudaFluidSolver::addDensitySource(float rho) {
@@ -404,7 +404,7 @@ void CudaFluidSolver::addDensitySource(float rho) {
         (patch_nz + threads.y - 1) / threads.y);
     addDensitySourceKernel<<<blocks, threads>>>(
         density_.view(), begin_x, begin_z, patch_nx, patch_nz, rho);
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void CudaFluidSolver::addForces(float dt) {
@@ -420,21 +420,21 @@ void CudaFluidSolver::enforceBoundaryVelocity() {
         (u.ny + tile - 1) / tile,
         (u.nz + tile - 1) / tile);
     zeroUBoundaryKernel<<<u_blocks, threads>>>(u, macgrid_.nx());
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 
     const GridView3D<float> v = macgrid_.v().view();
     const dim3 v_blocks(
         (v.nx + tile - 1) / tile,
         (v.nz + tile - 1) / tile);
     zeroVBoundaryKernel<<<v_blocks, threads>>>(v, macgrid_.ny());
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 
     const GridView3D<float> w = macgrid_.w().view();
     const dim3 w_blocks(
         (w.nx + tile - 1) / tile,
         (w.ny + tile - 1) / tile);
     zeroWBoundaryKernel<<<w_blocks, threads>>>(w, macgrid_.nz());
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void CudaFluidSolver::computeDivergence() {
@@ -452,12 +452,12 @@ void CudaFluidSolver::computeDivergence() {
         macgrid.v().view(),
         macgrid.w().view(),
         macgrid.spacing());
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void CudaFluidSolver::solvePressure(float dt, int iterations) {
     const GridView3D<float> initial_pressure = macgrid_.pressure().view();
-    CHECK_CUDA(cudaMemset(initial_pressure.data, 0, initial_pressure.size() * sizeof(float)));
+    CUDA_CHECK(cudaMemset(initial_pressure.data, 0, initial_pressure.size() * sizeof(float)));
 
     const float scale = macgrid_.spacing() * macgrid_.spacing() * macgrid_.rho() / dt;
     const dim3 threads(8, 8, 4);
@@ -470,7 +470,7 @@ void CudaFluidSolver::solvePressure(float dt, int iterations) {
     for (int iter = 0; iter < iterations; ++iter) {
         const auto pressure = static_cast<const DeviceGrid3D&>(macgrid_.pressure()).view();
         solvePressureKernel<<<blocks, threads>>>(pressure, divergence, pressure_next_.view(), scale);
-        CHECK_CUDA(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
         std::swap(macgrid_.pressure(), pressure_next_);
     }
 }
@@ -504,7 +504,7 @@ void CudaFluidSolver::advectDensity(float dt) {
     const auto w = host_view.w().view();
     advectDensityKernel<<<blocks, threads>>>(
         density.view(), density_next_.view(), u, v, w, dt, h, inv_h);
-    CHECK_CUDA(cudaGetLastError());
+    CUDA_CHECK(cudaGetLastError());
     std::swap(density_, density_next_);
 }
 

@@ -186,7 +186,7 @@ public:
             throw std::overflow_error("Device buffer size exceeds addressable storage");
         }
         if (size_ != 0) {
-            CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&data_), size_ * sizeof(T)));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&data_), size_ * sizeof(T)));
         }
     }
 
@@ -216,7 +216,7 @@ public:
 
     void reset() {
         if (data_ != nullptr) {
-            CHECK_CUDA(cudaFree(data_));
+            CUDA_CHECK(cudaFree(data_));
             data_ = nullptr;
             size_ = 0;
         }
@@ -261,13 +261,13 @@ public:
 
     void upload(const Grid3D& source) {
         validateDimensions(source);
-        CHECK_CUDA(cudaMemcpy(storage_.data(), source.data().data(),
+        CUDA_CHECK(cudaMemcpy(storage_.data(), source.data().data(),
             size() * sizeof(float), cudaMemcpyHostToDevice));
     }
 
     void download(Grid3D& destination) const {
         validateDimensions(destination);
-        CHECK_CUDA(cudaMemcpy(destination.data().data(), storage_.data(),
+        CUDA_CHECK(cudaMemcpy(destination.data().data(), storage_.data(),
             size() * sizeof(float), cudaMemcpyDeviceToHost));
     }
 
