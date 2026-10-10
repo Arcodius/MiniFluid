@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include "cuda_check.h"
 #include "fluid_solver_3d.h"
 
 std::vector<uint8_t> gFrameBuffer;
@@ -145,14 +146,14 @@ void loop() {
     } 
     int steps = 0;
     while (accumulator >= simulation_dt && steps < max_step_per_frame) {
-        solver.step(static_cast<float>(simulation_dt));
+        TIME(solver.step(static_cast<float>(simulation_dt)));
         accumulator -= simulation_dt;
         steps++;
     }
     if (steps == max_step_per_frame) {
         accumulator = 0.0;
     }
-    render(cur_ticks);
+    TIME(render(cur_ticks));
 }
 
 int main(int argc, char** argv) {

@@ -1,4 +1,5 @@
 #include "fluid_solver_3d.h"
+#include "cuda_check.h"
 
 void FluidSolver3D::initDensity() {
 
@@ -258,18 +259,18 @@ void FluidSolver3D::testDivergence(){
 }
 
 void FluidSolver3D::step(float dt){
-    advectVelocity(dt);
-    addVelocitySource(1.0f);
-    addDensitySource(1.0f);
-    addForces(dt);
-    enforceBoundaryVelocity();
+    REPLACE(advectVelocity(dt));
+    REPLACE(addVelocitySource(1.0f));
+    REPLACE(addDensitySource(1.0f));
+    REPLACE(addForces(dt));
+    REPLACE(enforceBoundaryVelocity());
 
-    computeDivergence();
+    REPLACE(computeDivergence());
     // testDivergence();
-    solvePressure(dt, 100);
-    applyPressureGradient(dt);
+    REPLACE(solvePressure(dt, 100));
+    REPLACE(applyPressureGradient(dt));
     // computeDivergence();
     // testDivergence();
 
-    advectDensity(dt);
+    REPLACE(advectDensity(dt));
 }
