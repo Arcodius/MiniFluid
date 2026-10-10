@@ -509,18 +509,18 @@ void CudaFluidSolver::advectDensity(float dt) {
 }
 
 void CudaFluidSolver::step(float dt) {
-    advectVelocity(dt);
-    addVelocitySource(1.0f);
-    addDensitySource(1.0f);
+    REPLACE(advectVelocity(dt));
+    REPLACE(addVelocitySource(1.0f));
+    REPLACE(addDensitySource(1.0f));
     addForces(dt);
-    enforceBoundaryVelocity();
+    REPLACE(enforceBoundaryVelocity());
 
-    computeDivergence();
+    REPLACE(computeDivergence());
     // testDivergence();
-    solvePressure(dt, 100);
-    applyPressureGradient(dt);
+    REPLACE(solvePressure(dt, 100));
+    REPLACE(applyPressureGradient(dt));
     // computeDivergence();
     // testDivergence();
 
-    advectDensity(dt);
+    REPLACE(advectDensity(dt));
 }

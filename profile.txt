@@ -1,0 +1,21 @@
+cuda time (wrapped the whole function)
+advectVelocity(dt)                                 | 350    | 218.91       | 76619.49
+addVelocitySource(1.0f)                            | 350    | 43.45        | 15208.58
+addDensitySource(1.0f)                             | 350    | 38.19        | 13367.58
+enforceBoundaryVelocity()                          | 350    | 72.20        | 25270.02
+computeDivergence()                                | 350    | 36.00        | 12599.74
+solvePressure(dt, 100)                             | 350    | 1404.05      | 491416.00
+applyPressureGradient(dt)                          | 350    | 59.79        | 20926.82
+advectDensity(dt)                                  | 350    | 37.57        | 13149.38
+cpu time 
+advectVelocity(dt)                                      | 154    | 253.91     | 39102
+addVelocitySource(1.0f)                                 | 154    | 105.58     | 16259
+addDensitySource(1.0f)                                  | 154    | 70.32      | 10829
+enforceBoundaryVelocity()                               | 154    | 90.25      | 13899
+computeDivergence()                                     | 154    | 54.51      | 8395
+solvePressure(dt, 100)                                  | 154    | 1404.04    | 216222
+applyPressureGradient(dt)                               | 154    | 72.64      | 11186
+advectDensity(dt)                                       | 154    | 48.40      | 7453
+step time
+render(cur_ticks)                                       | 245    | 14424.57   | 3534020
+solver.step(static_cast<float>(simulation_dt))          | 244    | 1590.45    | 388071
