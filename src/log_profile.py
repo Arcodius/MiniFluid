@@ -53,4 +53,4 @@ def calculate_mixed_profile(data_source):
 
 
 if __name__ == '__main__':
-  calculate_mixed_profile("build/Release/profile.log")
+  calculate_mixed_profile("build/Release-cpu/Release/profile.log")

@@ -18,4 +18,6 @@ add_custom_command(TARGET MiniFluid POST_BUILD
     $<TARGET_FILE_DIR:MiniFluid>
 )
 
-target_compile_options(MiniFluid PRIVATE "/O2") 
+# git checkout cpu
+# cmake -B build/Release-cpu -DCMAKE_BUILD_TYPE=Release
+# cmake --build build/Release-cpu
