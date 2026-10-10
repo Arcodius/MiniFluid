@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <string>
@@ -24,7 +25,15 @@ void write_to_log(const std::string& kernel_name, float ms);
         CUDA_CHECK(cudaEventSynchronize(stop));             \
         float ms = 0.0f;                                    \
         CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop)); \
-        write_to_log(name, ms);                             \
+        write_to_log_cuda(name, ms);                             \
         CUDA_CHECK(cudaEventDestroy(start));                \
         CUDA_CHECK(cudaEventDestroy(stop));                 \
+    } while (false)
+#define TIME(call) \
+    do {  \
+        auto start = std::chrono::system_clock::now();              \
+        call;   \
+        auto end = std::chrono::system_clock::now();\
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);\
+        write_to_log(#call, duration);\
     } while (false)

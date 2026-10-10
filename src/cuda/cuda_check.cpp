@@ -43,9 +43,16 @@ void reportCudaCleanupError(cudaError_t result) noexcept {
     }
 }
 
-void write_to_log(const std::string& kernel_name, float ms) {
+void write_to_log_cuda(const std::string& kernel_name, float ms) {
     std::ofstream log_file("cuda_profile.log", std::ios::app);
     log_file << "[CUDA Profile] Kernel: " << kernel_name 
+             << " | Time: " << ms << " ms\n";
+    // std::cout << "[LOG] " << kernel_name << " took " << ms << " ms\n";
+}
+
+void write_to_log(const std::string& kernel_name, float ms) {
+    std::ofstream log_file("profile.log", std::ios::app);
+    log_file << "[Profile]: " << kernel_name 
              << " | Time: " << ms << " ms\n";
     // std::cout << "[LOG] " << kernel_name << " took " << ms << " ms\n";
 }
