@@ -23,10 +23,10 @@ def calculate_mixed_profile(data_source):
   lines = (
       data_source.strip().splitlines()
       if '\n' in data_source
-      else open(data_source).readlines()
+      else open(data_source, encoding='utf-8').readlines()
   )
-
-  for line in lines:
+  warmup = int(len(lines) * 0.25)
+  for line in lines[warmup:]:
     match = pattern.search(line)
     if match:
       func_name = match.group(1).strip()
@@ -52,4 +52,4 @@ def calculate_mixed_profile(data_source):
 
 
 if __name__ == '__main__':
-  calculate_mixed_profile("build/Debug/profile_cuda.log")
+  calculate_mixed_profile("build/Debug/profile.log")
