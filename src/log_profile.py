@@ -26,8 +26,8 @@ def calculate_mixed_profile(data_source):
       if '\n' in data_source
       else Path(data_source).read_text(encoding='utf-8').splitlines()
   )
-
-  for line in lines:
+  warmup = int(len(lines) * 0.25)
+  for line in lines[warmup:]:
     match = pattern.search(line)
     if match:
       func_name = match.group(1).strip()
