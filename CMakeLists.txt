@@ -31,3 +31,11 @@ add_custom_command(TARGET MiniFluid POST_BUILD
     $<TARGET_FILE:SDL3::SDL3>
     $<TARGET_FILE_DIR:MiniFluid>
 )
+
+# # main 分支
+# cmake --preset release
+# cmake --build --preset release
+
+# # cpu-baseline 分支
+# cmake --preset release-cpu
+# cmake --build --preset release-cpu

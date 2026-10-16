@@ -19,6 +19,7 @@ const int WINDOW_HEIGHT = 1024 / 2;
 const int SIM_WIDTH = 64;
 const int SIM_HEIGHT = 64;
 const int SIM_DEPTH = 32;
+int SLICE_DEPTH = SIM_DEPTH / 2;
 
 CudaFluidSolver solver = CudaFluidSolver(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
 std::vector<float> gDisplaySlice(SIM_WIDTH * SIM_HEIGHT);
@@ -26,7 +27,7 @@ std::vector<float> gDisplaySlice(SIM_WIDTH * SIM_HEIGHT);
 bool SMOOTH_RENDERING = true;
 bool SHOW_DIV = false;
 bool PAUSE = false;
-int SLICE_DEPTH = SIM_DEPTH / 2;
+
 
 enum class DisplayQuantity {
     Density,
@@ -201,8 +202,8 @@ int main(int argc, char** argv) {
     gFrameBuffer = std::vector<uint8_t>(SIM_WIDTH * SIM_HEIGHT * 4); // ABGR8888
     gSDLWindow = SDL_CreateWindow("MiniFluid", WINDOW_WIDTH, WINDOW_HEIGHT, 0);
     gSDLRenderer = SDL_CreateRenderer(gSDLWindow, nullptr);
-    if (!SDL_SetRenderVSync(gSDLRenderer, 1)) {
-        SDL_Log("Failed to enable VSync: %s", SDL_GetError());
+    if (!SDL_SetRenderVSync(gSDLRenderer, 0)) {
+        SDL_Log("Failed to disable VSync: %s", SDL_GetError());
     }
     gSimTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SIM_WIDTH, SIM_HEIGHT);
     if (!gSDLWindow || !gSDLRenderer || !gSimTexture){

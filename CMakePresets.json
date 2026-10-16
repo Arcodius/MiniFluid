@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "release",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/Release"
+    },
+    {
+      "name": "release-cpu",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/Release-cpu"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-cpu",
+      "configurePreset": "release-cpu",
+      "configuration": "Release"
+    }
+  ]
+}
