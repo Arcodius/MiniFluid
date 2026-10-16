@@ -83,7 +83,7 @@ void FluidSolver2D::advectDensity(float dt) {
             const float x = (i + 0.5f) * h_;
             const float y = (j + 0.5f) * h_;
 
-            const Vec2 vel = macgrid.sampleVelocity(x, y);
+            const SimpleMath::Vector2 vel = macgrid.sampleVelocity(x, y);
             const float dep_x = x - dt * vel.x;
             const float dep_y = y - dt * vel.y;
 
@@ -103,7 +103,7 @@ void FluidSolver2D::advectVelocity(float dt) {
             const float x = i * h_;
             const float y = (j + 0.5f) * h_;
 
-            const Vec2 vel = macgrid.sampleVelocity(x, y);
+            const SimpleMath::Vector2 vel = macgrid.sampleVelocity(x, y);
 
             const float dep_x = x - dt * vel.x;
             const float dep_y = y - dt * vel.y;
@@ -120,7 +120,7 @@ void FluidSolver2D::advectVelocity(float dt) {
             const float x = (i + 0.5f) * h_;
             const float y = j * h_;
 
-            const Vec2 vel = macgrid.sampleVelocity(x, y);
+            const SimpleMath::Vector2 vel = macgrid.sampleVelocity(x, y);
 
             const float dep_x = x - dt * vel.x;
             const float dep_y = y - dt * vel.y;

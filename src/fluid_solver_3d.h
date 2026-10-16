@@ -38,7 +38,13 @@ public:
     void initDensity();
     void initVelocity();
 
-    Vec3 getSize() const { return Vec3(nx_, ny_, nz_); }
+    SimpleMath::Vector3 getSize() const {
+        return {
+            static_cast<float>(nx_),
+            static_cast<float>(ny_),
+            static_cast<float>(nz_)
+        };
+    }
 
     void advectVelocity(float dt);
     void addForces(float dt);

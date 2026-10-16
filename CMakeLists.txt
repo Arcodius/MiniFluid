@@ -6,6 +6,9 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 add_subdirectory(external/SDL)
+add_subdirectory(external/DirectXTK12)
+
+
 
 # 1. 递归收集 src 下的所有 C++ 和 CUDA 源文件
 file(GLOB_RECURSE ALL_SRC CONFIGURE_DEPENDS
@@ -19,6 +22,8 @@ add_executable(MiniFluid ${ALL_SRC})
 # 3. 设置头文件路径与库依赖
 target_include_directories(MiniFluid PRIVATE src)
 target_link_libraries(MiniFluid PRIVATE SDL3::SDL3)
+target_link_libraries(MiniFluid PRIVATE DirectXTK12)
+target_compile_definitions(MiniFluid PRIVATE NOMINMAX)
 set_target_properties(MiniFluid PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 
 # 4. 优化选项（MSVC 风格，跨平台可以写成 $<$<CXX_COMPILER_ID:MSVC>:/O2>）

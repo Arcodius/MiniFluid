@@ -19,7 +19,7 @@ void FluidSolver3D::advectVelocity(float dt){
                 const float y = (j + 0.5f) * h_;
                 const float z = (k + 0.5f) * h_;
 
-                const Vec3 vel = macgrid.sampleVelocity(x, y, z);
+                const SimpleMath::Vector3 vel = macgrid.sampleVelocity(x, y, z);
 
                 const float dep_x = x - dt * vel.x;
                 const float dep_y = y - dt * vel.y;
@@ -41,7 +41,7 @@ void FluidSolver3D::advectVelocity(float dt){
                 const float y = j * h_;
                 const float z = (k + 0.5f) * h_;
 
-                const Vec3 vel = macgrid.sampleVelocity(x, y, z);
+                const SimpleMath::Vector3 vel = macgrid.sampleVelocity(x, y, z);
 
                 const float dep_x = x - dt * vel.x;
                 const float dep_y = y - dt * vel.y;
@@ -63,7 +63,7 @@ void FluidSolver3D::advectVelocity(float dt){
                 const float y = (j + 0.5f) * h_;
                 const float z = k * h_;
 
-                const Vec3 vel = macgrid.sampleVelocity(x, y, z);
+                const SimpleMath::Vector3 vel = macgrid.sampleVelocity(x, y, z);
 
                 const float dep_x = x - dt * vel.x;
                 const float dep_y = y - dt * vel.y;
@@ -92,7 +92,7 @@ void FluidSolver3D::advectDensity(float dt){
         const float y = (j + 0.5f) * h_;
         const float z = (k + 0.5f) * h_;
 
-        const Vec3 vel = macgrid.sampleVelocity(x, y, z);
+        const SimpleMath::Vector3 vel = macgrid.sampleVelocity(x, y, z);
         const float dep_x = x - dt * vel.x;
         const float dep_y = y - dt * vel.y;
         const float dep_z = z - dt * vel.z;
@@ -111,7 +111,7 @@ void FluidSolver3D::addForces(float dt){
 }
 
 void FluidSolver3D::addVelocitySource(float v0){
-    const Vec3 center(0.5f*nx_, ny_, 0.5f*nz_);
+    const SimpleMath::Vector3 center(0.5f*nx_, static_cast<float>(ny_), 0.5f*nz_);
     const float radius = 4.0f;
 
     for (int i = 0; i < nx_; ++i) {
@@ -126,7 +126,10 @@ void FluidSolver3D::addVelocitySource(float v0){
 }
 
 void FluidSolver3D::addDensitySource(float rho){
-    const Vec3 center(lroundf(0.5f*nx_), lroundf(ny_), lroundf(0.5f*nz_));
+    const SimpleMath::Vector3 center(
+        static_cast<float>(lroundf(0.5f * nx_)),
+        static_cast<float>(lroundf(static_cast<float>(ny_))),
+        static_cast<float>(lroundf(0.5f * nz_)));
     const int half_width = 3;
     for (int i = center.x - half_width; i <= center.x + half_width; ++i) {
         for (int k = center.z - half_width; k <= center.z + half_width; ++k) {

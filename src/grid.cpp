@@ -16,14 +16,14 @@ float Grid2D::operator() (int i, int j) const {
 }
 
 
-Vec2 MacGrid2D::cellVelocity(int i, int j) {
+SimpleMath::Vector2 MacGrid2D::cellVelocity(int i, int j) {
     const float uc = 0.5f * (u_(i, j) + u_(i + 1, j));
     const float vc = 0.5f * (v_(i, j) + v_(i, j + 1));
     return {uc, vc};
 }
 
 // Sample velocity with real coordinates
-Vec2 MacGrid2D::sampleVelocity(float x, float y) const {
+SimpleMath::Vector2 MacGrid2D::sampleVelocity(float x, float y) const {
     const float inv_h = 1.0f / h_;
 
     const float u = sampleBilinear(u_, x * inv_h, y * inv_h - 0.5f);
@@ -56,15 +56,15 @@ void MacGrid2D::applyPressureGradient(float dt) {
     }
 }
 
-Vec3 MacGrid3D::cellVelocity(int i, int j, int k) {
+SimpleMath::Vector3 MacGrid3D::cellVelocity(int i, int j, int k) {
     const float uc = 0.5f * (u_(i, j, k) + u_(i + 1, j, k));
     const float vc = 0.5f * (v_(i, j, k) + v_(i, j + 1, k));
     const float wc = 0.5f * (w_(i, j, k) + w_(i, j, k + 1));
-    return Vec3(uc, vc, wc);
+    return SimpleMath::Vector3(uc, vc, wc);
 }
 
 // Sample velocity with real coordinates
-Vec3 MacGrid3D::sampleVelocity(float x, float y, float z) const {
+SimpleMath::Vector3 MacGrid3D::sampleVelocity(float x, float y, float z) const {
     const float inv_h = 1.0f / h_;
 
     const float u = sampleTrilinear(
@@ -74,7 +74,7 @@ Vec3 MacGrid3D::sampleVelocity(float x, float y, float z) const {
     const float w = sampleTrilinear(
         w_, x * inv_h - 0.5f, y * inv_h - 0.5f, z * inv_h);
 
-    return Vec3(u, v, w);
+    return SimpleMath::Vector3(u, v, w);
 }
 
 // Incompressible condition:
@@ -115,4 +115,3 @@ void MacGrid3D::applyPressureGradient(float dt) {
         }
     }
 }
-

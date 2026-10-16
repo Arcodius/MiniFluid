@@ -2,6 +2,7 @@
 
 #include "cuda/cuda_check.h"
 
+#include "math_types.h"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cstddef>
@@ -10,18 +11,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-
-struct Vec2 {
-    float x;
-    float y;
-};
-
-struct Vec3 {
-    float x, y, z;
-
-    explicit Vec3(float v) : x(v), y(v), z(v) {}
-    Vec3(float a, float b, float c) : x(a), y(b), z(c) {}
-};
 
 class Grid2D {
 private:
@@ -105,8 +94,8 @@ public:
     float spacing() const { return h_; }
     float rho() const { return rho_; }
 
-    Vec2 cellVelocity(int i, int j);
-    Vec2 sampleVelocity(float x, float y) const;
+    SimpleMath::Vector2 cellVelocity(int i, int j);
+    SimpleMath::Vector2 sampleVelocity(float x, float y) const;
     float divergenceAt(int i, int j);
     void applyPressureGradient(float dt);
 };
@@ -144,8 +133,8 @@ public:
     float spacing() const { return h_; }
     float rho() const { return rho_; }
 
-    Vec3 cellVelocity(int i, int j, int k);
-    Vec3 sampleVelocity(float x, float y, float z) const;
+    SimpleMath::Vector3 cellVelocity(int i, int j, int k);
+    SimpleMath::Vector3 sampleVelocity(float x, float y, float z) const;
     float divergenceAt(int i, int j, int k);
     void applyPressureGradient(float dt);
 };
