@@ -18,9 +18,9 @@ static int gDone;
 static bool gScreenshotRequested;
 const int WINDOW_WIDTH = 1024 / 2;
 const int WINDOW_HEIGHT = 1024 / 2;
-const int SIM_WIDTH = 64;
-const int SIM_HEIGHT = 64;
-const int SIM_DEPTH = 32;
+const int SIM_WIDTH = 128;
+const int SIM_HEIGHT = 128;
+const int SIM_DEPTH = 128;
 int SLICE_DEPTH = SIM_DEPTH / 2;
 
 CudaFluidSolver solver = CudaFluidSolver(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
@@ -32,6 +32,7 @@ bool PAUSE = false;
 
 Camera* camera;
 CudaRenderer* cudaRenderer;
+bool gMouseLookActive;
 
 enum class DisplayQuantity {
     Density,
@@ -64,9 +65,9 @@ void OnInit() {
     cudaRenderer = new CudaRenderer(solver, *camera, {SIM_WIDTH, SIM_HEIGHT});
 }
 
-bool update() {
+bool update(float deltaTime) {
     SDL_Event e;
-    if (SDL_PollEvent(&e)) {
+    while (SDL_PollEvent(&e)) {
         if (e.type == SDL_EVENT_QUIT) {
             return false;
         }
@@ -75,20 +76,16 @@ bool update() {
         }
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_SPACE) {
             PAUSE = !PAUSE;
-            return true;
         }
-        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_S) {
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_M) {
             SMOOTH_RENDERING = !SMOOTH_RENDERING;
             SDL_SetTextureScaleMode(gSimTexture, SMOOTH_RENDERING ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
-            return true;
         }
-        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_D) {
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_V) {
             gDisplayQuantity = (gDisplayQuantity == DisplayQuantity::Divergence) ? DisplayQuantity::Density : DisplayQuantity::Divergence;
-            return true;
         }
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_P) {
             gScreenshotRequested = true;
-            return true;
         }
         if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_UP) {
             SLICE_DEPTH++;
@@ -98,6 +95,47 @@ bool update() {
             SLICE_DEPTH--;
             SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
         }
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+            && e.button.button == SDL_BUTTON_RIGHT) {
+            gMouseLookActive = true;
+        }
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_UP
+            && e.button.button == SDL_BUTTON_RIGHT) {
+            gMouseLookActive = false;
+        }
+        if (e.type == SDL_EVENT_MOUSE_MOTION && gMouseLookActive) {
+            camera->processMouseMotion(e.motion.xrel, e.motion.yrel);
+        }
+        if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+            const float direction = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+                ? -1.0f
+                : 1.0f;
+            camera->handleScroll(direction * e.wheel.y, deltaTime);
+        }
+        if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+            gMouseLookActive = false;
+        }
+    }
+
+    const bool* keyboardState = SDL_GetKeyboardState(nullptr);
+    const bool movingForward = keyboardState[SDL_SCANCODE_W];
+    const bool movingBackward = keyboardState[SDL_SCANCODE_S];
+    const bool movingLeft = keyboardState[SDL_SCANCODE_A];
+    const bool movingRight = keyboardState[SDL_SCANCODE_D];
+    const float movementDeltaTime =
+        deltaTime * ((movingForward || movingBackward)
+            && (movingLeft || movingRight) ? 0.70710678f : 1.0f);
+    if (movingForward) {
+        camera->handleKeyPress('w', movementDeltaTime);
+    }
+    if (movingBackward) {
+        camera->handleKeyPress('s', movementDeltaTime);
+    }
+    if (movingLeft) {
+        camera->handleKeyPress('a', movementDeltaTime);
+    }
+    if (movingRight) {
+        camera->handleKeyPress('d', movementDeltaTime);
     }
     return true;
 }
@@ -179,7 +217,7 @@ void loop() {
     prev_ticks = cur_ticks;
 
     frame_dt = std::min(frame_dt, 0.1);
-    if (!update()) {
+    if (!update(static_cast<float>(frame_dt))) {
         gDone = 1;
         return;
     }
