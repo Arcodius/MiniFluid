@@ -58,16 +58,20 @@ public:
     void reset();
     Vector3 getPosition() const { return position; }
     Vector3 getTarget() const { return target; }
+    Vector3 getFront() const { return front; }
+    Vector3 getRight() const { return right; }
     Vector3 getUp() const { return up; }
     float getFovY() const { return fovY; }
     float getAspect() const { return aspect; }
+    float getOrthographicZoom() const { return zoomFactor; }
+    bool isPerspective() const { return projectionType == PERSPECTIVE; }
     float getNearClip() const { return n; }
     float getFarClip() const { return f; }
     Matrix getViewMatrix();
     Matrix getProjectionMatrix();
-    // TODO: set attributes -> update projection matrix -> update scene
     void setPosition(const Vector3& position);
     void setTarget(const Vector3& target);
+    void lookAt(const Vector3& target);
 	void setAspect(float aspect);
 	void setFovY(float fovY);
 	void setNearClip(float nearClip);

@@ -113,6 +113,10 @@ void Camera::setTarget(const Vector3& target) {
     }
 }
 
+void Camera::lookAt(const Vector3& target) {
+    setTarget(target);
+}
+
 Matrix Camera::getViewMatrix() {
     if (isViewDirty) {
         viewMatrix = Matrix::CreateLookAt(position, target, up);

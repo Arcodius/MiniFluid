@@ -6,7 +6,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include "camera.h"
 #include "cuda/cuda_fluid_solver.h"
+#include "cuda/cuda_renderer.h"
 
 std::vector<uint8_t> gFrameBuffer;
 SDL_Window* gSDLWindow;
@@ -28,6 +30,8 @@ bool SMOOTH_RENDERING = true;
 bool SHOW_DIV = false;
 bool PAUSE = false;
 
+Camera* camera;
+CudaRenderer* cudaRenderer;
 
 enum class DisplayQuantity {
     Density,
@@ -48,6 +52,16 @@ SDL_FRect calDstRect(int outputWidth, int outputHeight, int simWidth, int simHei
     dst_rect.w = width;
     dst_rect.h = height;
     return dst_rect;
+}
+
+void OnInit() {
+    camera = new Camera();
+    camera->setPosition(Vector3(1.0f));
+    camera->lookAt(Vector3(
+        0.5f * SIM_WIDTH * solver.spacing(),
+        0.5f * SIM_HEIGHT * solver.spacing(),
+        0.5f * SIM_DEPTH * solver.spacing()));
+    cudaRenderer = new CudaRenderer(solver, *camera, {SIM_WIDTH, SIM_HEIGHT});
 }
 
 bool update() {
@@ -94,26 +108,20 @@ void render(Uint64 aTicks) {
     const int nx = solver.nx();
     const int ny = solver.ny();
     if (gDisplayQuantity == DisplayQuantity::Density) {
-        solver.copyDensitySlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
+        cudaRenderer->render(gFrameBuffer.data(), gFrameBuffer.size());
     } else {
         solver.copyDivergenceSlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
-    }
-
-    for (int j = 0, c = 0; j < ny; ++j) {
-        for (int i = 0; i < nx; ++i, ++c) {
-            const float value = gDisplaySlice[c];
-            float intensity;
-            if (gDisplayQuantity == DisplayQuantity::Density) {
-                intensity = normalize(value, 0.0f, 1.0f);
-            } else {
+        for (int j = 0, c = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i, ++c) {
                 constexpr float divergenceRange = 1.0f;
-                intensity = normalize(value, -divergenceRange, divergenceRange);
+                const float intensity = normalize(
+                    gDisplaySlice[c], -divergenceRange, divergenceRange);
+                const uint8_t byteValue = toByte(intensity);
+                gFrameBuffer[c * 4 + 0] = byteValue;
+                gFrameBuffer[c * 4 + 1] = byteValue;
+                gFrameBuffer[c * 4 + 2] = byteValue;
+                gFrameBuffer[c * 4 + 3] = 255;
             }
-            const uint8_t byteValue = toByte(intensity);
-            gFrameBuffer[c * 4 + 0] = byteValue;
-            gFrameBuffer[c * 4 + 1] = byteValue;
-            gFrameBuffer[c * 4 + 2] = byteValue;
-            gFrameBuffer[c * 4 + 3] = 255;
         }
     }
 
@@ -215,6 +223,8 @@ int main(int argc, char** argv) {
         SDL_Log("Failed to set scale mode: %s", SDL_GetError());
     }
 
+    OnInit();
+
     gDone = 0;
     while(!gDone) {
         loop();
@@ -223,6 +233,8 @@ int main(int argc, char** argv) {
     SDL_DestroyTexture(gSimTexture);
     SDL_DestroyRenderer(gSDLRenderer);
     SDL_DestroyWindow(gSDLWindow);
+    delete cudaRenderer;
+    delete camera;
     SDL_Quit();
 
     return 0;

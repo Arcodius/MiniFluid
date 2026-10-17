@@ -19,6 +19,8 @@ public:
     int nx() const noexcept { return macgrid_.nx(); }
     int ny() const noexcept { return macgrid_.ny(); }
     int nz() const noexcept { return macgrid_.nz(); }
+    float spacing() const noexcept { return macgrid_.spacing(); }
+    GridView3D<const float> densityView() const noexcept { return density_.view(); }
 
     void copyDensitySlice(int k, float* destination, size_t element_count) const;
     void copyDivergenceSlice(int k, float* destination, size_t element_count) const;
