@@ -26,6 +26,12 @@ target_link_libraries(MiniFluid PRIVATE DirectXTK12)
 target_compile_definitions(MiniFluid PRIVATE NOMINMAX)
 set_target_properties(MiniFluid PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 
+# 性能分析开关：开启后 TIME(...)/CUDA_TIME(...) 会同步并写入 profile.log；关闭时只执行原调用
+option(PROFILE "Enable TIME/CUDA_TIME profiling instrumentation" OFF)
+if(PROFILE)
+    target_compile_definitions(MiniFluid PRIVATE PROFILE)
+endif()
+
 # 4. 优化选项（MSVC 风格，跨平台可以写成 $<$<CXX_COMPILER_ID:MSVC>:/O2>）
 # target_compile_options(MiniFluid PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:/O2>)
 # target_link_options(MiniFluid PRIVATE $<$<CONFIG:RelWithDebInfo>:/PROFILE>)

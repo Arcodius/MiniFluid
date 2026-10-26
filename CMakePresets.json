@@ -4,7 +4,18 @@
     {
       "name": "release",
       "generator": "Visual Studio 18 2026",
-      "binaryDir": "${sourceDir}/build/Release"
+      "binaryDir": "${sourceDir}/build/Release",
+      "cacheVariables": {
+        "MINIFLUID_ENABLE_PROFILING": "OFF"
+      }
+    },
+    {
+      "name": "release-profile",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/Release-profile",
+      "cacheVariables": {
+        "MINIFLUID_ENABLE_PROFILING": "ON"
+      }
     },
     {
       "name": "release-cpu",
@@ -16,6 +27,11 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-profile",
+      "configurePreset": "release-profile",
       "configuration": "Release"
     },
     {

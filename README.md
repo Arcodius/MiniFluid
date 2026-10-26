@@ -193,6 +193,15 @@ The active `TIME(...)` instrumentation appends timings in microseconds to `profi
 
 `CUDA_TIME(...)` is also available for CUDA-event timing and writes to `profile_cuda.log` when used. The current simulation step uses `TIME(...)`.
 
+Both macros are controlled by the CMake option `PROFILE` (default `OFF`). When it is off, they expand to the wrapped call only, with no synchronization or logging. Build a profiling binary with the `release-profile` preset:
+
+```
+cmake --preset release-profile
+cmake --build --preset release-profile
+```
+
+Or set the option manually: `cmake -DPROFILE=ON ...`.
+
 The optional Python utility summarizes timings, discards the first 25% of log lines as warm-up, and reports sample counts, averages, and totals:
 
 ```powershell

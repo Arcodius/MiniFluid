@@ -13,20 +13,24 @@ void write_to_log_cuda(const std::string& kernel_name, float ms);
 void write_to_log(const std::string& kernel_name, float ms);
 
 #define CUDA_CHECK(call) checkCuda((call), #call, __FILE__, __LINE__)
-#define CUDA_TIME(call)                        \
+
+// Controlled by the CMake option PROFILE.
+// When disabled, CUDA_TIME/TIME expand to the bare call with no sync or logging.
+#ifdef PROFILE
+#define CUDA_TIME(call)                                     \
     do {                                                    \
         cudaStream_t stream = 0;                            \
         cudaEvent_t start, stop;                            \
         CUDA_CHECK(cudaEventCreate(&start));                \
         CUDA_CHECK(cudaEventCreate(&stop));                 \
         CUDA_CHECK(cudaEventRecord(start, stream));         \
-        call;                                        \
+        call;                                               \
         CUDA_CHECK(cudaGetLastError());                     \
         CUDA_CHECK(cudaEventRecord(stop, stream));          \
         CUDA_CHECK(cudaEventSynchronize(stop));             \
         float ms = 0.0f;                                    \
         CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop)); \
-        write_to_log_cuda(#call, ms);                             \
+        write_to_log_cuda(#call, ms);                       \
         CUDA_CHECK(cudaEventDestroy(start));                \
         CUDA_CHECK(cudaEventDestroy(stop));                 \
     } while (false)
@@ -39,5 +43,9 @@ void write_to_log(const std::string& kernel_name, float ms);
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);\
         write_to_log(#call, static_cast<float>(duration.count()));\
     } while (false)
+#else
+#define CUDA_TIME(call) do { call; } while (false)
+#define TIME(call) do { call; } while (false)
+#endif
 
 #define REPLACE(call) call
