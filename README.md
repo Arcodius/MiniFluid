@@ -311,3 +311,28 @@ The `--capture` option prints the average time per simulation step and per rende
 The simulation uses a dense uniform grid with a solid floor and open top and sides; there are no internal obstacles. The pressure solve runs a fixed number of multigrid cycles without a convergence stopping criterion, so a small residual divergence remains. Velocity uses first-order semi-Lagrangian advection, which still smooths small eddies; vorticity confinement compensates only partly. The light volume is recomputed every frame at simulation resolution. Sky occlusion considers only the column directly above each cell. Multiple scattering is approximated rather than simulated.
 
 The CPU solvers are available in the source tree, but the current application has no runtime backend selector or CPU-only build option.
+
+
+1. 光照与阴影
+渲染部分在 cuda_renderer.cu：
+
+光照体积：每帧为每个网格算出朝向太阳的光学深度（用于自阴影）和朝向天空的光学深度（用于环境遮蔽）。
+散射：Henyey-Greenstein 相函数，加上多重散射近似（分 3 级叠加），再叠加天空环境光，积分按步长解析计算。
+场景：地面会接收烟雾投下的阴影，背景是带太阳光晕的天空，输出做了 ACES 色调映射。
+可选效果：按 F 开启温度发光，热烟会呈现火焰般的橙色；按 L 切回原来的无光照渲染，便于对比。
+性能：密度改用 3D 纹理，由硬件做三线性插值；渲染分辨率从 128² 提高到 768²，每帧 GPU 耗时约 2.3 ms。
+2. 生动的烟雾
+模拟部分在 cuda_fluid_solver.cu：
+
+温度与浮力：新增温度场，热烟会上升，并且温度会逐渐冷却。
+涡度约束：把数值耗散掉的旋涡补回来，这是烟雾细节丰富的主要来源。
+平流：回溯改为二阶（RK2）；密度和温度改用 MacCormack 平流，边缘更锐利。
+发射源：由动画噪声调制，可以是球形或薄盘形，支持绕圈移动和脉冲喷射。
+场景预设：共 4 个，在 scene_presets.cpp 中，按 1–4 切换：浮力羽流、对撞射流、烟圈、游走源。
+压力求解：100 次 Jacobi 迭代换成了带热启动的多重网格 V-cycle。羽流场景中，投影后的最大散度约为 0.06（投影前约 26），每步只需约 2.3 ms。
+开放边界：顶部和四周都开放，烟会离开计算域，不再堆在墙边露出盒子的形状；只有地面是实心的。
+步进耗时：网格是 128×192×128，比原来的 128³ 更高，每步约 7 ms（原来是 128³ 网格，约 23 ms）。
+开发中需要你知道的
+多重网格的开放边界：最初每一层都把零压力的虚拟单元放在一个单元格之外，粗网格上边界位置因此错位，求解在几步之内就发散了。现在每一层按比例调整边界项，使边界停在同一物理位置。
+速度场的 MacCormack 默认关闭：它和涡度约束叠加后会放大网格尺度的噪声，画面上表现为颗粒感，所以只对密度和温度启用。这个开关在 SmokeParameters 中。
+发射源噪声：噪声原本有一层频率接近网格分辨率，同样会产生颗粒感，已减为两层。
