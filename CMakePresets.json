@@ -2,8 +2,17 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "release",
+      "name": "base",
+      "hidden": true,
       "generator": "Visual Studio 18 2026",
+      "toolset": "v143,cuda=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "61"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/Release",
       "cacheVariables": {
         "PROFILE": "OFF"
@@ -11,7 +20,7 @@
     },
     {
       "name": "release-profile",
-      "generator": "Visual Studio 18 2026",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/Release-profile",
       "cacheVariables": {
         "PROFILE": "ON"
@@ -19,7 +28,7 @@
     },
     {
       "name": "release-cpu",
-      "generator": "Visual Studio 18 2026",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/Release-cpu"
     }
   ],
