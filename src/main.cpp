@@ -25,9 +25,10 @@ const int WINDOW_WIDTH = 768;
 const int WINDOW_HEIGHT = 768;
 const int RENDER_WIDTH = 768;
 const int RENDER_HEIGHT = 768;
-const int SIM_WIDTH = 128;
-const int SIM_HEIGHT = 192;
-const int SIM_DEPTH = 128;
+const int SIM_W = 64;
+const int SIM_WIDTH = SIM_W;
+const int SIM_HEIGHT = SIM_W * 1.5;
+const int SIM_DEPTH = SIM_W;
 int SLICE_DEPTH = SIM_DEPTH / 2;
 
 CudaFluidSolver solver = CudaFluidSolver(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
