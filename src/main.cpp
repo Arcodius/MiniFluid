@@ -1,6 +1,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <exception>
 #include <string>
 
 #include <SDL3/SDL.h>
@@ -359,7 +360,20 @@ void capture(int steps, const std::string& path) {
     render(0);
 }
 
+static int run(int argc, char** argv);
+
 int main(int argc, char** argv) {
+    // CUDA_CHECK throws on failure; report it instead of terminating silently.
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        SDL_Log("Fatal error: %s", e.what());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "MiniFluid", e.what(), nullptr);
+        return 1;
+    }
+}
+
+static int run(int argc, char** argv) {
     int initialPreset = 0;
     int captureSteps = -1;
     std::string capturePath = "capture.bmp";
