@@ -6,7 +6,7 @@
       "generator": "Visual Studio 18 2026",
       "binaryDir": "${sourceDir}/build/Release",
       "cacheVariables": {
-        "MINIFLUID_ENABLE_PROFILING": "OFF"
+        "PROFILE": "OFF"
       }
     },
     {
@@ -14,7 +14,7 @@
       "generator": "Visual Studio 18 2026",
       "binaryDir": "${sourceDir}/build/Release-profile",
       "cacheVariables": {
-        "MINIFLUID_ENABLE_PROFILING": "ON"
+        "PROFILE": "ON"
       }
     },
     {

@@ -1,24 +1,42 @@
 # MiniFluid
 
-A C++ and CUDA implementation of grid-based incompressible flow for smoke simulation. MiniFluid combines a three-dimensional staggered MAC grid, semi-Lagrangian advection, pressure projection, and CUDA volume rendering in an interactive SDL3 application.
+A C++ and CUDA implementation of grid-based incompressible flow for smoke simulation. MiniFluid combines a three-dimensional staggered MAC grid, buoyant smoke with vorticity confinement, a multigrid pressure projection, and a CUDA volume renderer with single- and multiple-scattering lighting and volumetric shadows in an interactive SDL3 application.
 
-The default scene continuously injects smoke and upward velocity near the bottom center of a closed domain. The repository also contains CPU implementations of the 2D and 3D solvers for studying the numerical methods alongside the GPU implementation.
+The default scene is a hot, buoyant plume rising from a noisy source on the floor and breaking up into turbulent billows. Three more scenes (colliding jets, pulsed vortex rings, and a wandering source) are a key press away. The repository also contains CPU implementations of the 2D and 3D solvers for studying the numerical methods alongside the GPU implementation.
+
+<p align="center">
+  <img src="doc/smoke-plume.png" alt="Buoyant smoke plume with self-shadowing and a shadow cast on the floor" width="512">
+</p>
+
+<p align="center">
+  <img src="doc/smoke-scenes.png" alt="The four built-in scenes" width="1024"><br>
+  <em>Scenes 1–4: buoyant plume, colliding jets, smoke rings, wandering source</em>
+</p>
 
 ## Features
 
-- **CUDA simulation:** velocity advection, source injection, boundary enforcement, divergence computation, Jacobi pressure iterations, pressure-gradient subtraction, and density advection.
-- **Staggered MAC grid:** face-centered velocity components with cell-centered pressure and smoke density.
-- **Semi-Lagrangian transport:** first-order backtracing and trilinear interpolation in the 3D CUDA solver.
-- **GPU volume rendering:** ray-box intersection, trilinear density sampling, front-to-back opacity accumulation, and early ray termination.
-- **Interactive inspection:** camera movement, mouse look, pause, divergence slices, texture filtering, and BMP screenshots.
-- **Development utilities:** timing logs and a CPU/CUDA divergence comparison routine.
+- **Buoyant smoke:** temperature and smoke density fields drive a Boussinesq buoyancy force; temperature cools and smoke dissipates over time.
+- **Rich small-scale detail:** vorticity confinement re-injects the swirling motion that numerical dissipation removes, MacCormack advection keeps density and temperature sharp, and a second-order (midpoint) backtrace follows curved streamlines.
+- **Animated emitters:** spherical or disk-shaped sources whose injected density, temperature, and velocity are modulated by animated noise, with optional orbiting motion and pulsing.
+- **Multigrid pressure solve:** a warm-started, cell-centered geometric multigrid V-cycle with red-black Gauss-Seidel smoothing, about 15x residual reduction per cycle.
+- **Open boundaries:** smoke leaves through the top and sides of the domain instead of piling up against walls; the floor is solid.
+- **Lit volume rendering:** precomputed light volume (optical depth toward the sun and the sky), Henyey-Greenstein phase function, an octave-based multiple-scattering approximation, sky ambient light, a floor that receives smoke shadows, sky background, ACES tone mapping, and an optional temperature-driven glow.
+- **Staggered MAC grid:** face-centered velocity components with cell-centered pressure, temperature, and smoke density.
+- **Interactive inspection:** camera movement, mouse look, movable sun, scene presets, pause/reset, divergence slices, and BMP screenshots.
+- **Development utilities:** offline capture mode, timing logs, and a CPU/CUDA divergence comparison routine.
 
-<!-- ![First image](first.png) ![Second image](second.png) -->
+<p align="center">
+  <img src="doc/smoke-lighting.png" alt="Unlit, lit, and lit with emission renderings of the same frame" width="768"><br>
+  <em>The same frame unlit (<code>L</code>), lit (default), and with temperature emission (<code>F</code>)</em>
+</p>
+
+<details>
+<summary>Earlier results</summary>
 <table>
   <tr>
     <td align="center">
       <img src="doc/first.png" alt="first" width="300"><br>
-      <em>A 2D FLuid Example</em>
+      <em>A 2D Fluid Example</em>
     </td>
     <td align="center">
       <img src="doc/divergence.png" alt="divergence" width="300"><br>
@@ -26,11 +44,11 @@ The default scene continuously injects smoke and upward velocity near the bottom
     </td>
     <td colspan="2" align="center">
       <img src="doc/fluid-3d.png" alt="fluid-3d" width="300"><br>
-      <em>3D FLuid Volume Rendering</em>
+      <em>First 3D Fluid Volume Rendering</em>
     </td>
   </tr>
 </table>
-
+</details>
 
 ## Build and Run
 
@@ -44,7 +62,7 @@ The current build targets Windows and requires:
 - CMake with support for the selected Visual Studio generator. The top-level project declares CMake 3.20, while the checked-out DirectXTK12 dependency requires at least 3.21.
 - Git for retrieving the repository and dependencies.
 
-The project uses C++20 for C++ sources and CUDA C++17 for CUDA sources. SDL3 provides the window, input handling, and texture presentation. DirectXTK12 supplies the SimpleMath types used by the camera and CPU code; volume rendering itself is implemented in CUDA.
+The project uses C++20 for C++ sources and CUDA C++17 for CUDA sources. SDL3 provides the window, input handling, and texture presentation. DirectXTK12 supplies the SimpleMath types used by the camera and CPU code; simulation and rendering are implemented in CUDA.
 
 ### Get the Source
 
@@ -88,6 +106,17 @@ If you use a different Visual Studio installation, configure a separate build di
 
 > The `release-cpu` preset currently changes only the build directory. It builds the same CUDA-enabled executable and does not select a CPU backend. The application instantiates `CudaFluidSolver` directly in `src/main.cpp`.
 
+### Command-Line Options
+
+| Option | Effect |
+| --- | --- |
+| `--preset <1-4>` | Start with the given scene |
+| `--unlit` | Start with the unlit renderer |
+| `--emission` | Start with temperature emission enabled |
+| `--capture <steps> [file.bmp]` | Run `<steps>` simulation steps of `1/60` s without real-time pacing, render one frame, save it (default `capture.bmp`), print timings, and exit |
+
+For example, `MiniFluid.exe --preset 2 --capture 420 jets.bmp` saves the colliding-jets scene after seven simulated seconds. The images in `doc/` were produced this way.
+
 ## Controls
 
 | Input | Action |
@@ -96,36 +125,57 @@ If you use a different Visual Studio installation, configure a separate build di
 | `A` / `D` | Move the camera left / right |
 | Hold right mouse button and drag | Rotate the camera |
 | Mouse wheel | Adjust the perspective field of view |
+| `1` – `4` | Load a scene preset (and reset the simulation) |
+| `R` | Reset the current scene |
 | `Space` | Pause or resume the simulation |
-| `V` | Switch between volume-rendered density and a grayscale divergence slice |
+| `Left` / `Right` | Rotate the sun around the vertical axis |
+| `Page Up` / `Page Down` | Raise / lower the sun |
+| `L` | Toggle lit rendering / unlit opacity accumulation |
+| `F` | Toggle temperature emission (glowing hot smoke) |
+| `G` | Toggle the floor |
+| `V` | Switch between the volume rendering and a grayscale divergence slice |
 | `Up` / `Down` | Increase / decrease the divergence slice's Z index |
 | `M` | Toggle linear / nearest-neighbor texture scaling |
 | `P` | Save a screenshot beside the executable |
 | `Esc` | Exit |
 
-Screenshots use the first available name in the sequence `screenshot_1.bmp`, `screenshot_2.bmp`, and so on. Camera controls and display changes remain available while the simulation is paused.
+The window title shows the current scene, the frame rate, and whether the simulation is paused. Screenshots use the first available name in the sequence `screenshot_1.bmp`, `screenshot_2.bmp`, and so on. Camera, lighting, and display controls remain available while the simulation is paused.
+
+## Scenes
+
+Scenes are defined in `src/scene_presets.cpp` as a set of `SmokeParameters` plus up to four `SmokeEmitter`s.
+
+| Key | Scene | Description |
+| --- | --- | --- |
+| `1` | Buoyant plume | A hot source on the floor; buoyancy and vorticity confinement turn the rising column into turbulent billows |
+| `2` | Colliding jets | Two horizontal jets from opposite sides collide, mix, and rise |
+| `3` | Smoke rings | Short pulses from a thin disk roll up into vortex rings that travel upward |
+| `4` | Wandering source | A source orbiting on the floor produces a twisting, leaning plume |
 
 ## Simulation Method
 
-For a grid of `nx × ny × nz` cells, pressure and smoke density are stored at cell centers. Velocity components occupy the corresponding cell faces:
+For a grid of `nx × ny × nz` cells, pressure, smoke density, and temperature are stored at cell centers. Velocity components occupy the corresponding cell faces:
 
 | Field | Dimensions |
 | --- | --- |
-| Pressure, smoke density, divergence | `nx × ny × nz` |
+| Pressure, smoke density, temperature, divergence | `nx × ny × nz` |
 | X velocity (`u`) | `(nx + 1) × ny × nz` |
 | Y velocity (`v`) | `nx × (ny + 1) × nz` |
 | Z velocity (`w`) | `nx × ny × (nz + 1)` |
 
 Each CUDA simulation step performs the following operations:
 
-1. Advect the three velocity components through the current velocity field.
-2. Inject upward velocity and smoke density at the source.
-3. Call the external-force hook, which is currently empty.
-4. Set normal velocity to zero at the domain walls.
-5. Compute the discrete velocity divergence.
-6. Reset pressure and run 100 Jacobi iterations for the pressure Poisson equation.
-7. Subtract the pressure gradient from velocity.
-8. Advect smoke density using the projected velocity field.
+1. **Advect velocity** with semi-Lagrangian transport. Departure points use a midpoint (RK2) backtrace; samples are trilinear.
+2. **Apply emitters.** Inside each emitter, density and temperature are raised to the emitter's noise-modulated values, and face velocities relax toward the emitter velocity plus a noise perturbation that breaks the plume's symmetry.
+3. **Add forces** at cell centers, averaged onto faces:
+   - Buoyancy: `f_y = beta * T - alpha * s`, where `T` is temperature and `s` is smoke density.
+   - Vorticity confinement: `f = epsilon * h * (N × omega)`, with `omega = curl(u)` and `N = grad|omega| / |grad|omega||`.
+   - An optional constant wind acceleration.
+4. **Enforce boundaries:** zero normal velocity at the floor and at any closed faces.
+5. **Compute the discrete divergence.**
+6. **Solve for pressure** with warm-started multigrid V-cycles (two by default).
+7. **Subtract the pressure gradient** from velocity.
+8. **Advect density and temperature** together with MacCormack advection, then apply smoke dissipation and cooling.
 
 The pressure projection approximates incompressibility through
 
@@ -134,33 +184,73 @@ Laplacian(p) = (rho / dt) * divergence(u*)
 u_new        = u* - (dt / rho) * gradient(p)
 ```
 
-Here, `rho` is the constant fluid density used by the pressure solve. The transported smoke density is a separate scalar field used for visualization.
+Here, `rho` is the constant fluid density used by the pressure solve. The transported smoke density and temperature are separate scalar fields.
+
+**Multigrid.** The grid is coarsened by factors of two while every dimension stays even and at least 8 (for the default grid: 128×192×128 down to 4×6×4). A V-cycle runs two red-black Gauss-Seidel sweeps before and after the coarse-grid correction. Coarse right-hand sides are 2×2×2 averages of the fine residual, and corrections are interpolated back trilinearly. The coarsest level gets 24 over-relaxed sweeps. Walls are Neumann boundaries. Open faces are zero-pressure Dirichlet boundaries whose ghost cell sits one fine cell outside the domain; each coarse level weights that boundary term so it stays at the same physical location, which keeps the cycle convergent. The previous step's pressure is the initial guess. On the plume scene after five simulated seconds, two cycles reduce the maximum divergence over the grid from about 26 before projection to about 0.06 after it, and four cycles reach about 3e-4.
+
+**MacCormack advection.** A forward semi-Lagrangian step is followed by a backward step; half of the round-trip error is then subtracted. The result is clamped to the range of the eight values the forward step interpolated from, which prevents new extrema. MacCormack is enabled for density and temperature. It is disabled by default for velocity, because combined with vorticity confinement it amplifies grid-scale noise that shows up as grain in the rendering.
 
 The application advances simulation time in fixed `1/60`-second steps, with at most four simulation steps per rendered frame. It caps frame-time accumulation and discards remaining backlog after reaching that limit, so simulation time can advance more slowly than wall-clock time under heavy load.
 
 ### Rendering
 
-The CUDA renderer marches a ray through the density volume for each output pixel, using a step size of half a grid cell. It accumulates a fixed smoke color with density-dependent opacity and terminates when transmittance falls below `0.01`. The resulting image is copied to CPU memory, uploaded to an SDL texture, and scaled to the window.
+Each frame, the renderer copies density (and temperature, when emission is on) into 3D CUDA arrays so that rays can use hardware trilinear filtering. It then builds a light volume at simulation resolution with two channels:
 
-The divergence view displays values in the range `[-1, 1]` as grayscale, with zero mapped to mid-gray. It reads the divergence computed **before pressure projection**. To inspect the projected field, enable the commented `computeDivergence()` call after `applyPressureGradient()` in `CudaFluidSolver::step()`.
+- **Sun optical depth:** for every cell, a march toward the sun accumulates `extinction * density * distance`.
+- **Sky optical depth:** a per-column prefix sum straight up to the top of the domain, used as a cheap sky-occlusion term.
+
+The main kernel marches each pixel's ray through the volume with a step of half a cell. The starting offset is jittered per pixel with interleaved gradient noise to avoid banding. At each sample with smoke:
+
+- Sun light is `sum_i a^i * phase_i(cos θ) * exp(-b^i * tau_sun)` over three octaves (`a = 0.3`, `b = 0.5`). This approximates multiple scattering: deeper octaves are dimmer, penetrate further, and use a less anisotropic phase.
+- Each octave's phase is a mix of a forward Henyey-Greenstein lobe (`g = 0.5` for the first octave) and a weak backward lobe.
+- Sky light is the ambient sky color times `exp(-tau_sky)`.
+- In-scattering is integrated analytically over the step, `L * (1 - exp(-sigma * ds))`, with albedo `0.85`.
+- With emission enabled, temperature above a threshold adds a blackbody-like orange glow.
+
+Rays that leave the volume or reach transmittance below `0.003` composite over the background. The background is either the floor plane at `y = 0` or a sky gradient with a sun halo. The floor is lit by the sun and darkened by a shadow ray marched through the density texture, and beneath the smoke it is also occluded from the sky. The result is exposed, ACES tone-mapped, gamma-encoded, and dithered. The rendered image is copied to CPU memory, uploaded to an SDL texture, and scaled to the window.
+
+The unlit mode (`L`) reproduces the earlier renderer: opacity accumulation of a fixed smoke color over black.
+
+The divergence view displays values in the range `[-1, 1]` as grayscale, with zero mapped to mid-gray and `+y` pointing up. It reads the divergence computed **before pressure projection**. To inspect the projected field, enable the commented `computeDivergence()` call after `applyPressureGradient()` in `CudaFluidSolver::step()`.
+
+### Performance
+
+These measurements come from an RTX 3070 with the default 128×192×128 grid, a 768×768 render, and Nsight Systems kernel timings on the plume scene:
+
+| Stage | GPU time |
+| --- | --- |
+| Pressure solve (2 V-cycles) | ~2.3 ms |
+| Velocity, density, and temperature advection | ~2.2 ms |
+| Vorticity confinement and buoyancy | ~1.2 ms |
+| Sources, divergence, gradient, boundaries | ~0.6 ms |
+| **Simulation step** | **~6.3 ms** |
+| Light volume | ~1.4 ms |
+| Ray marching | ~0.8 ms |
+
+Interactively, the application runs at roughly 150 frames per second while keeping the simulation in real time.
 
 ## Configuration
 
-Settings are currently defined in source code and require rebuilding.
+Grid, window, and timing settings are defined in source code and require rebuilding. Simulation parameters are set per scene in `src/scene_presets.cpp`; defaults are in `SmokeParameters` and `SmokeEmitter` (`src/cuda/cuda_fluid_solver.h`). Lighting defaults are in `LightingSettings` (`src/cuda/cuda_renderer.h`).
 
 | Setting | Default | Location |
 | --- | --- | --- |
-| Simulation grid | `128 × 128 × 128` | `SIM_WIDTH`, `SIM_HEIGHT`, `SIM_DEPTH` in `src/main.cpp` |
-| Cell spacing | `1 / SIM_WIDTH` | Solver construction in `src/main.cpp` |
+| Simulation grid | `128 × 192 × 128` | `SIM_WIDTH`, `SIM_HEIGHT`, `SIM_DEPTH` in `src/main.cpp` |
+| Cell spacing | `1 / SIM_WIDTH` (domain is 1 × 1.5 × 1 world units) | Solver construction in `src/main.cpp` |
 | Fluid density for projection | `1.0` | Solver construction in `src/main.cpp` |
-| Window size | `512 × 512` | `WINDOW_WIDTH`, `WINDOW_HEIGHT` in `src/main.cpp` |
-| Volume render resolution | `128 × 128` | `CudaRenderer` construction in `OnInit()` |
+| Window size | `768 × 768` | `WINDOW_WIDTH`, `WINDOW_HEIGHT` in `src/main.cpp` |
+| Volume render resolution | `768 × 768` | `RENDER_WIDTH`, `RENDER_HEIGHT` in `src/main.cpp` |
 | Simulation time step | `1/60` second | `simulation_dt` in `loop()` |
 | Maximum simulation steps per frame | `4` | `max_step_per_frame` in `loop()` |
-| Pressure iterations | `100` | `solvePressure(dt, 100)` in `src/cuda/cuda_fluid_solver.cu` |
-| Source velocity / smoke density | `1.0` / `1.0` | Source calls in `CudaFluidSolver::step()` |
-
-Changing the render resolution independently also requires updating the host framebuffer and SDL texture dimensions to match.
+| Buoyancy (`beta`, `alpha`) | `2.5`, `0.08` | `SmokeParameters::buoyancyTemperature`, `buoyancyDensity` |
+| Vorticity confinement (`epsilon`) | `3.0` | `SmokeParameters::vorticity` |
+| Smoke dissipation / cooling rate | `0.05` / `0.6` per second | `SmokeParameters::densityDissipation`, `temperatureCooling` |
+| Pressure V-cycles per step | `2` | `SmokeParameters::pressureCycles` |
+| MacCormack on scalars / velocity | on / off | `SmokeParameters::maccormackScalars`, `maccormackVelocity` |
+| Open top / open sides | on / on | `SmokeParameters::openTop`, `openSides` |
+| Sun direction | azimuth `320°`, elevation `38°` | `LightingSettings::lightAzimuth`, `lightElevation` |
+| Extinction, albedo, phase `g` | `90`, `0.85`, `0.5` | `LightingSettings` |
+| Exposure | `0.6` | `LightingSettings::exposure` |
 
 ## Repository Layout
 
@@ -168,11 +258,13 @@ Changing the render resolution independently also requires updating the host fra
 MiniFluid/
 ├── CMakeLists.txt                 # Executable, dependencies, and runtime copying
 ├── CMakePresets.json              # Visual Studio configure/build presets
+├── doc/                           # Images used in this README
 ├── external/
 │   ├── SDL/                      # SDL3
 │   └── DirectXTK12/              # DirectX Tool Kit and SimpleMath
 └── src/
-    ├── main.cpp                  # Application loop, controls, and display modes
+    ├── main.cpp                  # Application loop, controls, capture mode, and display modes
+    ├── scene_presets.h / .cpp    # Built-in smoke scenes
     ├── camera.h / camera.cpp     # Camera movement and ray generation
     ├── grid.h / grid.cpp         # CPU/device grids, MAC layouts, and buffers
     ├── fluid_math.h / .cpp       # Numerical and interpolation helpers
@@ -180,8 +272,8 @@ MiniFluid/
     ├── fluid_solver_3d.h / .cpp  # CPU 3D solver
     ├── log_profile.py            # Timing-log summary utility
     └── cuda/
-        ├── cuda_fluid_solver.*   # CUDA 3D simulation
-        ├── cuda_renderer.*       # CUDA volume ray marching
+        ├── cuda_fluid_solver.*   # CUDA 3D smoke simulation and multigrid pressure solve
+        ├── cuda_renderer.*       # Light volume and lit volume ray marching
         ├── cuda_check.*          # CUDA checks and timing utilities
         ├── divergence_cuda.*     # Standalone CUDA divergence computation
         └── divergence_check.cpp # CPU/CUDA divergence comparison routine
@@ -189,7 +281,7 @@ MiniFluid/
 
 ## Profiling and Validation Utilities
 
-The active `TIME(...)` instrumentation appends timings in microseconds to `profile.log` in the application's working directory. It synchronizes the default CUDA stream before recording elapsed time, and writes logs for individual simulation stages as well as the complete simulation step and rendering. These synchronization points and file writes contribute to runtime overhead.
+The active `TIME(...)` instrumentation appends timings in microseconds to `profile.log` in the application's working directory. It synchronizes the default CUDA stream before recording elapsed time, and writes logs for individual simulation stages, the complete simulation step, the light-volume update, and rendering. These synchronization points and file writes contribute to runtime overhead.
 
 `CUDA_TIME(...)` is also available for CUDA-event timing and writes to `profile_cuda.log` when used. The current simulation step uses `TIME(...)`.
 
@@ -210,10 +302,12 @@ python src/log_profile.py
 
 Its current input path is hard-coded to `build/Release/profile.log`. Run the application with `build/Release` as its working directory, or change that path to the location of your log before running the script. Python is only needed for this utility.
 
+The `--capture` option prints the average time per simulation step and per rendered frame. That gives a quick measurement without a profiling build.
+
 `src/cuda/divergence_check.cpp` contains `main_check_divergence()`, which compares CPU and CUDA divergence on a `17 × 11 × 7` grid with a maximum absolute error tolerance of `1e-5`. This routine is compiled into the application but is not called by the default entry point or registered as a separate test target.
 
 ## Current Scope
 
-The implemented demo uses a dense grid, a fixed source, and closed domain walls. The CUDA external-force hook is empty, so the upward motion comes from injected velocity; buoyancy and vorticity confinement are not currently implemented. Pressure projection uses a fixed iteration count without a convergence stopping criterion, so residual divergence can remain. The renderer uses opacity accumulation without volumetric lighting or shadows.
+The simulation uses a dense uniform grid with a solid floor and open top and sides; there are no internal obstacles. The pressure solve runs a fixed number of multigrid cycles without a convergence stopping criterion, so a small residual divergence remains. Velocity uses first-order semi-Lagrangian advection, which still smooths small eddies; vorticity confinement compensates only partly. The light volume is recomputed every frame at simulation resolution. Sky occlusion considers only the column directly above each cell. Multiple scattering is approximated rather than simulated.
 
 The CPU solvers are available in the source tree, but the current application has no runtime backend selector or CPU-only build option.
