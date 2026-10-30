@@ -21,3 +21,5 @@ CMakeUserPresets.json
 build
 out
 .vs
+profile*
+profile*.*
