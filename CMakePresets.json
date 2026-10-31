@@ -4,7 +4,11 @@
     {
       "name": "base",
       "hidden": true,
-      "generator": "Visual Studio 18 2026",
+      "generator": "Visual Studio 18 2026"
+    },
+    {
+      "name": "laptop",
+      "hidden": true,
       "toolset": "v143,cuda=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9",
       "cacheVariables": {
         "CMAKE_CUDA_ARCHITECTURES": "61"
@@ -30,6 +34,18 @@
       "name": "release-cpu",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build/Release-cpu"
+    },
+    {
+      "name": "release-laptop",
+      "inherits": ["laptop", "release"]
+    },
+    {
+      "name": "release-profile-laptop",
+      "inherits": ["laptop", "release-profile"]
+    },
+    {
+      "name": "release-cpu-laptop",
+      "inherits": ["laptop", "release-cpu"]
     }
   ],
   "buildPresets": [
@@ -46,6 +62,21 @@
     {
       "name": "release-cpu",
       "configurePreset": "release-cpu",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-laptop",
+      "configurePreset": "release-laptop",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-profile-laptop",
+      "configurePreset": "release-profile-laptop",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-cpu-laptop",
+      "configurePreset": "release-cpu-laptop",
       "configuration": "Release"
     }
   ]

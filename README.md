@@ -102,6 +102,8 @@ Launch the executable:
 
 The nested `Release` directory is expected: the preset uses `build/Release` as its build directory, and Visual Studio adds the configuration directory beneath it. The build copies the SDL runtime library beside the executable. The CUDA shared runtime must also be available at launch.
 
+The default presets use Visual Studio's default platform toolset and the default CUDA Toolkit. Each preset also has a `-laptop` variant (`release-laptop`, `release-profile-laptop`, `release-cpu-laptop`) that selects the v143 toolset with CUDA 12.9 and targets compute capability 6.1, for Pascal GPUs that newer CUDA releases no longer support.
+
 If you use a different Visual Studio installation, configure a separate build directory with a generator supported by both CMake and your CUDA Toolkit, then build the `Release` configuration.
 
 > The `release-cpu` preset currently changes only the build directory. It builds the same CUDA-enabled executable and does not select a CPU backend. The application instantiates `CudaFluidSolver` directly in `src/main.cpp`.
