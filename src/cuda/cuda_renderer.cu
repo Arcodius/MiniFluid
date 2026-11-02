@@ -2,6 +2,7 @@
 
 #include "camera.h"
 #include "cuda/cuda_fluid_solver.h"
+#include "profile/profiler.h"
 
 #include <cfloat>
 #include <cmath>
@@ -577,18 +578,21 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
             * static_cast<float>(width_) / static_cast<float>(height_);
     }
 
-    TIME(updateVolumes());
+    PROFILE_GPU(GpuStage::Volumes, updateVolumes());
 
     constexpr int tile = 16;
     const dim3 threads(tile, tile);
     const dim3 blocks(
         (static_cast<unsigned int>(width_) + tile - 1) / tile,
         (static_cast<unsigned int>(height_) + tile - 1) / tile);
-    renderKernel<<<blocks, threads>>>(
-        density_.texture(), temperature_.texture(), lightDepth_.texture(),
-        makeRenderParams(solver_, lighting_), renderCamera,
-        static_cast<int>(width_), static_cast<int>(height_), devicePixels_.data());
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaMemcpy(
-        destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost));
+    {
+        const GpuScope scope(GpuStage::RayMarch);
+        renderKernel<<<blocks, threads>>>(
+            density_.texture(), temperature_.texture(), lightDepth_.texture(),
+            makeRenderParams(solver_, lighting_), renderCamera,
+            static_cast<int>(width_), static_cast<int>(height_), devicePixels_.data());
+        CUDA_CHECK(cudaGetLastError());
+    }
+    PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(
+        destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost)));
 }

@@ -21,5 +21,7 @@ CMakeUserPresets.json
 build
 out
 .vs
-profile*
-profile*.*
+# Profiler output (source files under src/profile are tracked)
+profile*.log
+profile_*.csv
+profile_charts

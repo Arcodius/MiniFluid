@@ -23,7 +23,8 @@ The default scene is a hot, buoyant plume rising from a noisy source on the floo
 - **Lit volume rendering:** precomputed light volume (optical depth toward the sun and the sky), Henyey-Greenstein phase function, an octave-based multiple-scattering approximation, sky ambient light, a floor that receives smoke shadows, sky background, ACES tone mapping, and an optional temperature-driven glow.
 - **Staggered MAC grid:** face-centered velocity components with cell-centered pressure, temperature, and smoke density.
 - **Interactive inspection:** camera movement, mouse look, movable sun, scene presets, pause/reset, divergence slices, and BMP screenshots.
-- **Development utilities:** offline capture mode, timing logs, and a CPU/CUDA divergence comparison routine.
+- **Runtime profiler:** an in-app ImGui window (`F1`) with a rolling frame-rate graph, per-stage CPU and GPU timings, solver diagnostics (divergence, pressure residual, CFL, energy, smoke mass), and CSV export.
+- **Development utilities:** offline capture mode and a CPU/CUDA divergence comparison routine.
 
 <p align="center">
   <img src="doc/smoke-lighting.png" alt="Unlit, lit, and lit with emission renderings of the same frame" width="768"><br>
@@ -116,6 +117,8 @@ If you use a different Visual Studio installation, configure a separate build di
 | `--unlit` | Start with the unlit renderer |
 | `--emission` | Start with temperature emission enabled |
 | `--capture <steps> [file.bmp]` | Run `<steps>` simulation steps of `1/60` s without real-time pacing, render one frame, save it (default `capture.bmp`), print timings, and exit |
+| `--profile` | Open the profiler window at startup |
+| `--profile-record <file.csv>` | Record every frame to a CSV file from startup until exit |
 
 For example, `MiniFluid.exe --preset 2 --capture 420 jets.bmp` saves the colliding-jets scene after seven simulated seconds. The images in `doc/` were produced this way.
 
@@ -139,9 +142,10 @@ For example, `MiniFluid.exe --preset 2 --capture 420 jets.bmp` saves the collidi
 | `Up` / `Down` | Increase / decrease the divergence slice's Z index |
 | `M` | Toggle linear / nearest-neighbor texture scaling |
 | `P` | Save a screenshot beside the executable |
+| `F1` | Show / hide the profiler window |
 | `Esc` | Exit |
 
-The window title shows the current scene, the frame rate, and whether the simulation is paused. Screenshots use the first available name in the sequence `screenshot_1.bmp`, `screenshot_2.bmp`, and so on. Camera, lighting, and display controls remain available while the simulation is paused.
+The window title shows the current scene, the frame rate, whether the simulation is paused, and `[REC]` while a profile is being recorded. Screenshots use the first available name in the sequence `screenshot_1.bmp`, `screenshot_2.bmp`, and so on. Camera, lighting, and display controls remain available while the simulation is paused.
 
 ## Scenes
 
@@ -263,6 +267,7 @@ MiniFluid/
 ├── doc/                           # Images used in this README
 ├── external/
 │   ├── SDL/                      # SDL3
+│   ├── imgui/                    # Dear ImGui (profiler window)
 │   └── DirectXTK12/              # DirectX Tool Kit and SimpleMath
 └── src/
     ├── main.cpp                  # Application loop, controls, capture mode, and display modes
@@ -272,39 +277,49 @@ MiniFluid/
     ├── fluid_math.h / .cpp       # Numerical and interpolation helpers
     ├── fluid_solver_2d.h / .cpp  # CPU 2D solver
     ├── fluid_solver_3d.h / .cpp  # CPU 3D solver
-    ├── log_profile.py            # Timing-log summary utility
+    ├── log_profile.py            # Summary and charts for profiler CSV files
+    ├── profile/
+    │   ├── profiler.*            # Frame profiler: CPU/GPU stage timing, history, CSV
+    │   └── profiler_ui.*         # ImGui profiler window
     └── cuda/
         ├── cuda_fluid_solver.*   # CUDA 3D smoke simulation and multigrid pressure solve
         ├── cuda_renderer.*       # Light volume and lit volume ray marching
-        ├── cuda_check.*          # CUDA checks and timing utilities
+        ├── cuda_check.*          # CUDA error checks
         ├── divergence_cuda.*     # Standalone CUDA divergence computation
         └── divergence_check.cpp # CPU/CUDA divergence comparison routine
 ```
 
 ## Profiling and Validation Utilities
 
-The active `TIME(...)` instrumentation appends timings in microseconds to `profile.log` in the application's working directory. It synchronizes the default CUDA stream before recording elapsed time, and writes logs for individual simulation stages, the complete simulation step, the light-volume update, and rendering. These synchronization points and file writes contribute to runtime overhead.
+### Runtime profiler
 
-`CUDA_TIME(...)` is also available for CUDA-event timing and writes to `profile_cuda.log` when used. The current simulation step uses `TIME(...)`.
+Press `F1` to open the profiler window. Profiling runs only while the window is open or a recording is active. When it is off, each instrumented stage costs one branch and the solver computes no diagnostics.
 
-Both macros are controlled by the CMake option `PROFILE` (default `OFF`). When it is off, they expand to the wrapped call only, with no synchronization or logging. Build a profiling binary with the `release-profile` preset:
+**Timing.** GPU stages are timed with CUDA events on the default stream. The events are read once per frame, after the render readback has already waited for the GPU, so the timers add no synchronization points and the measured pipeline matches the unprofiled one. CPU stages (input, simulation submission, rendering including the readback wait, texture upload, UI, present) use a steady clock. Simulation stages are summed over all steps in a frame. The window also reports GPU time per step, throughput in cells per second, steps per frame, and the realtime factor (simulated seconds per wall-clock second, which drops below 1 when the step limit discards backlog).
 
-```
-cmake --preset release-profile
-cmake --build --preset release-profile
-```
+The window shows statistics over the last 5, 10, 30, or 60 seconds: average FPS, 1% low (FPS at the 99th-percentile frame time), frame-time minimum, maximum, and p99, a frame-rate graph, and a graph of the slowest frame in each time bucket.
 
-Or set the option manually: `cmake -DPROFILE=ON ...`.
+**Solver diagnostics.** On one step every *N* frames (configurable in the window; default every frame), GPU reductions measure:
 
-The optional Python utility summarizes timings, discards the first 25% of log lines as warm-up, and reports sample counts, averages, and totals:
+| Metric | Meaning |
+| --- | --- |
+| max / rms divergence before and after | Velocity divergence before and after the pressure projection, and the reduction factor |
+| Pressure residual | `‖b − A p‖ / ‖b‖` of the Poisson equation on the finest multigrid level after the V-cycles |
+| Max speed, CFL | Largest face velocity component and `max speed · dt / h`. CFL above 1 is highlighted. Semi-Lagrangian advection stays stable there, but accuracy drops |
+| Kinetic energy, smoke mass | `½ ρ Σ u² h³` over faces and `Σ s h³` |
+| Max density / temperature | Field extrema. A NaN anywhere in a field shows up in its maximum |
+
+**Export.** In the window's *Export* section, *Start recording* streams every frame to `profile_rec_<date>_<time>.csv` beside the executable until it is stopped. *Export last …* writes the frames in the selected history window to `profile_<date>_<time>.csv`. `--profile-record <file.csv>` records from startup until exit. Each file starts with `#` metadata lines (scene, grid, dt, V-cycles, GPU) followed by one row per frame with all stage timings and, on sampled frames, the diagnostics.
+
+The CMake option `PROFILE` (default `OFF`, `ON` in the `release-profile` presets) only opens the profiler window at startup. The profiler is compiled into every build.
+
+The optional Python utility (requires matplotlib) prints per-stage averages, maxima, and per-step GPU costs and a diagnostics summary. It also saves charts of frame and GPU time, per-step simulation stages, a stage breakdown pie, and diagnostic histories to `profile_charts/`. The first 25% of rows are discarded as warm-up:
 
 ```powershell
-python src/log_profile.py
+python src/log_profile.py build\Release\Release\profile_rec_20261101_120000.csv
 ```
 
-Its current input path is hard-coded to `build/Release/profile.log`. Run the application with `build/Release` as its working directory, or change that path to the location of your log before running the script. Python is only needed for this utility.
-
-The `--capture` option prints the average time per simulation step and per rendered frame. That gives a quick measurement without a profiling build.
+The `--capture` option prints the average time per simulation step and per rendered frame for a quick measurement without the window.
 
 `src/cuda/divergence_check.cpp` contains `main_check_divergence()`, which compares CPU and CUDA divergence on a `17 × 11 × 7` grid with a maximum absolute error tolerance of `1e-5`. This routine is compiled into the application but is not called by the default entry point or registered as a separate test target.
 

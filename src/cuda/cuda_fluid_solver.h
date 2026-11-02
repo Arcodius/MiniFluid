@@ -39,6 +39,30 @@ struct SmokeParameters {
     bool openSides = true;             // Let smoke leave through the x and z faces
 };
 
+// Global quality measures of one simulation step, computed on request by GPU reductions.
+struct SolverDiagnostics {
+    float time = 0.0f;                 // Simulation time at the end of the sampled step (s)
+    float divergenceBeforeMax = 0.0f;  // max |div u*| before the pressure projection (1/s)
+    float divergenceBeforeRms = 0.0f;
+    float divergenceAfterMax = 0.0f;   // max |div u| after the projection (1/s)
+    float divergenceAfterRms = 0.0f;
+    float pressureResidual = 0.0f;     // ||b - A p|| / ||b|| on the finest multigrid level
+    float maxSpeed = 0.0f;             // Largest face velocity component (world units / s)
+    float cfl = 0.0f;                  // maxSpeed * dt / h
+    float kineticEnergy = 0.0f;        // 0.5 * rho * sum(u^2) * h^3 over all faces
+    float smokeMass = 0.0f;            // sum(s) * h^3
+    float maxDensity = 0.0f;
+    float maxTemperature = 0.0f;
+};
+
+// Partial sums written by the diagnostics reduction kernel.
+struct DiagnosticReduction {
+    double sum;
+    double sumSquares;
+    unsigned int maxAbsBits;  // Bit pattern of max |x|; NaN compares above every finite value
+    unsigned int padding;
+};
+
 class CudaFluidSolver {
 private:
     DeviceMacGrid3D macgrid_;
@@ -67,6 +91,14 @@ private:
     };
     std::vector<MultigridLevel> coarse_levels_;
 
+    DeviceBuffer<DiagnosticReduction> diagnostic_reductions_;
+    bool diagnostics_requested_ = false;
+    bool diagnostics_pending_ = false;  // Reduced on the GPU but not read back yet
+    float diagnostics_dt_ = 0.0f;
+    float diagnostics_time_ = 0.0f;
+
+    void computeDiagnostics(float dt);
+
     SmokeParameters params_;
     std::vector<SmokeEmitter> emitters_;
     float time_ = 0.0f;
@@ -79,6 +111,7 @@ public:
     int nz() const noexcept { return macgrid_.nz(); }
     float spacing() const noexcept { return macgrid_.spacing(); }
     float time() const noexcept { return time_; }
+    int multigridLevels() const noexcept { return static_cast<int>(coarse_levels_.size()) + 1; }
     GridView3D<const float> densityView() const noexcept { return density_.view(); }
     GridView3D<const float> temperatureView() const noexcept { return temperature_.view(); }
 
@@ -105,4 +138,9 @@ public:
     void advectDensity(float dt);
 
     void step(float dt);
+
+    // The next step also computes SolverDiagnostics. fetchDiagnostics reads them back
+    // (blocking until that step has finished) and returns false if none are pending.
+    void requestDiagnostics() noexcept { diagnostics_requested_ = true; }
+    bool fetchDiagnostics(SolverDiagnostics& out);
 };

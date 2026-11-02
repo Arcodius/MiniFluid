@@ -7,10 +7,16 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_sdlrenderer3.h>
+
 #include "camera.h"
 #include "scene_presets.h"
 #include "cuda/cuda_fluid_solver.h"
 #include "cuda/cuda_renderer.h"
+#include "profile/profiler.h"
+#include "profile/profiler_ui.h"
 
 std::vector<uint8_t> gFrameBuffer;
 std::vector<uint8_t> gSliceBuffer;
@@ -25,11 +31,12 @@ const int WINDOW_WIDTH = 768;
 const int WINDOW_HEIGHT = 768;
 const int RENDER_WIDTH = 768;
 const int RENDER_HEIGHT = 768;
-const int SIM_W = 64;
+const int SIM_W = 128;
 const int SIM_WIDTH = SIM_W;
 const int SIM_HEIGHT = SIM_W * 1.5;
 const int SIM_DEPTH = SIM_W;
 int SLICE_DEPTH = SIM_DEPTH / 2;
+constexpr double SIMULATION_DT = 1.0 / 60.0;
 
 CudaFluidSolver solver = CudaFluidSolver(SIM_WIDTH, SIM_HEIGHT, SIM_DEPTH, 1.0f / SIM_WIDTH, 1.0f);
 std::vector<float> gDisplaySlice(SIM_WIDTH * SIM_HEIGHT);
@@ -42,6 +49,9 @@ bool PAUSE = false;
 Camera* camera;
 CudaRenderer* cudaRenderer;
 bool gMouseLookActive;
+bool gImGuiActive;          // ImGui is only set up for the interactive loop, not for --capture
+std::string gOutputDirectory;
+std::string gGpuName;
 
 enum class DisplayQuantity {
     Density,
@@ -64,12 +74,25 @@ SDL_FRect calDstRect(int outputWidth, int outputHeight, int simWidth, int simHei
     return dst_rect;
 }
 
+void updateProfilerMetadata() {
+    profiler().setMetadata({
+        {"scene", gPresets[gPresetIndex].name},
+        {"grid", std::to_string(SIM_WIDTH) + "x" + std::to_string(SIM_HEIGHT) + "x" + std::to_string(SIM_DEPTH)},
+        {"render", std::to_string(RENDER_WIDTH) + "x" + std::to_string(RENDER_HEIGHT)},
+        {"dt", std::to_string(SIMULATION_DT)},
+        {"pressure_cycles", std::to_string(solver.parameters().pressureCycles)},
+        {"multigrid_levels", std::to_string(solver.multigridLevels())},
+        {"gpu", gGpuName},
+    });
+}
+
 void applyPreset(int index) {
     gPresetIndex = std::clamp(index, 0, static_cast<int>(gPresets.size()) - 1);
     const ScenePreset& preset = gPresets[gPresetIndex];
     solver.parameters() = preset.parameters;
     solver.setEmitters(preset.emitters);
     solver.reset();
+    updateProfilerMetadata();
     SDL_Log("Scene %d: %s", gPresetIndex + 1, preset.name);
 }
 
@@ -86,11 +109,21 @@ void OnInit() {
 bool update(float deltaTime) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        if (gImGuiActive) {
+            ImGui_ImplSDL3_ProcessEvent(&e);
+        }
         if (e.type == SDL_EVENT_QUIT) {
             return false;
         }
+        // While the cursor is over the profiler window, or a widget has keyboard focus,
+        // the input belongs to ImGui. Releasing buttons is always handled below.
+        const bool uiMouse = gImGuiActive && ImGui::GetIO().WantCaptureMouse;
+        const bool uiKeyboard = gImGuiActive && ImGui::GetIO().WantCaptureKeyboard;
         LightingSettings& lighting = cudaRenderer->lighting();
-        if (e.type == SDL_EVENT_KEY_UP) {
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_F1) {
+            profiler().setWindowVisible(!profiler().windowVisible());
+        }
+        if (e.type == SDL_EVENT_KEY_UP && !uiKeyboard) {
             switch (e.key.key) {
             case SDLK_ESCAPE:
                 return false;
@@ -130,15 +163,15 @@ bool update(float deltaTime) {
                 break;
             }
         }
-        if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_UP) {
+        if (e.type == SDL_EVENT_KEY_DOWN && !uiKeyboard && e.key.key == SDLK_UP) {
             SLICE_DEPTH++;
             SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
         }
-        if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_DOWN) {
+        if (e.type == SDL_EVENT_KEY_DOWN && !uiKeyboard && e.key.key == SDLK_DOWN) {
             SLICE_DEPTH--;
             SLICE_DEPTH = std::clamp(SLICE_DEPTH, 0, SIM_DEPTH - 1);
         }
-        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !uiMouse
             && e.button.button == SDL_BUTTON_RIGHT) {
             gMouseLookActive = true;
         }
@@ -149,7 +182,7 @@ bool update(float deltaTime) {
         if (e.type == SDL_EVENT_MOUSE_MOTION && gMouseLookActive) {
             camera->processMouseMotion(e.motion.xrel, e.motion.yrel);
         }
-        if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+        if (e.type == SDL_EVENT_MOUSE_WHEEL && !uiMouse) {
             const float direction = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
                 ? -1.0f
                 : 1.0f;
@@ -160,6 +193,9 @@ bool update(float deltaTime) {
         }
     }
 
+    if (gImGuiActive && ImGui::GetIO().WantCaptureKeyboard) {
+        return true;
+    }
     const bool* keyboardState = SDL_GetKeyboardState(nullptr);
     const bool movingForward = keyboardState[SDL_SCANCODE_W];
     const bool movingBackward = keyboardState[SDL_SCANCODE_S];
@@ -231,12 +267,35 @@ std::string nextScreenshotPath() {
     }
 }
 
+void drawUi() {
+    const CpuScope scope(CpuStage::Ui);
+    ImGui_ImplSDLRenderer3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    if (profiler().windowVisible()) {
+        ProfilerContext context;
+        context.sceneName = gPresets[gPresetIndex].name;
+        context.nx = solver.nx();
+        context.ny = solver.ny();
+        context.nz = solver.nz();
+        context.multigridLevels = solver.multigridLevels();
+        context.pressureCycles = solver.parameters().pressureCycles;
+        context.simulationDt = SIMULATION_DT;
+        context.paused = PAUSE;
+        context.outputDirectory = gOutputDirectory;
+        drawProfilerWindow(profiler(), context);
+    }
+    ImGui::Render();
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), gSDLRenderer);
+}
+
 void render(Uint64 aTicks) {
     SDL_Texture* texture;
     int textureWidth;
     int textureHeight;
     if (gDisplayQuantity == DisplayQuantity::Density) {
-        cudaRenderer->render(gFrameBuffer.data(), gFrameBuffer.size());
+        PROFILE_CPU(CpuStage::Render, cudaRenderer->render(gFrameBuffer.data(), gFrameBuffer.size()));
+        const CpuScope upload(CpuStage::Upload);
         if (!SDL_UpdateTexture(gRenderTexture, nullptr, gFrameBuffer.data(), RENDER_WIDTH * 4 * sizeof(uint8_t))) {
             SDL_Log("Failed to update texture: %s", SDL_GetError());
         }
@@ -244,23 +303,27 @@ void render(Uint64 aTicks) {
         textureWidth = RENDER_WIDTH;
         textureHeight = RENDER_HEIGHT;
     } else {
-        const int nx = solver.nx();
-        const int ny = solver.ny();
-        solver.copyDivergenceSlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
-        // Flip vertically so that +y points up on screen.
-        for (int j = 0; j < ny; ++j) {
-            for (int i = 0; i < nx; ++i) {
-                constexpr float divergenceRange = 1.0f;
-                const float intensity = normalize(
-                    gDisplaySlice[j * nx + i], -divergenceRange, divergenceRange);
-                const uint8_t byteValue = toByte(intensity);
-                const int c = (ny - 1 - j) * nx + i;
-                gSliceBuffer[c * 4 + 0] = byteValue;
-                gSliceBuffer[c * 4 + 1] = byteValue;
-                gSliceBuffer[c * 4 + 2] = byteValue;
-                gSliceBuffer[c * 4 + 3] = 255;
+        {
+            const CpuScope slice(CpuStage::Render);
+            const int nx = solver.nx();
+            const int ny = solver.ny();
+            solver.copyDivergenceSlice(SLICE_DEPTH, gDisplaySlice.data(), gDisplaySlice.size());
+            // Flip vertically so that +y points up on screen.
+            for (int j = 0; j < ny; ++j) {
+                for (int i = 0; i < nx; ++i) {
+                    constexpr float divergenceRange = 1.0f;
+                    const float intensity = normalize(
+                        gDisplaySlice[j * nx + i], -divergenceRange, divergenceRange);
+                    const uint8_t byteValue = toByte(intensity);
+                    const int c = (ny - 1 - j) * nx + i;
+                    gSliceBuffer[c * 4 + 0] = byteValue;
+                    gSliceBuffer[c * 4 + 1] = byteValue;
+                    gSliceBuffer[c * 4 + 2] = byteValue;
+                    gSliceBuffer[c * 4 + 3] = 255;
+                }
             }
         }
+        const CpuScope upload(CpuStage::Upload);
         if (!SDL_UpdateTexture(gSliceTexture, nullptr, gSliceBuffer.data(), SIM_WIDTH * 4 * sizeof(uint8_t))) {
             SDL_Log("Failed to update texture: %s", SDL_GetError());
         }
@@ -269,19 +332,27 @@ void render(Uint64 aTicks) {
         textureHeight = SIM_HEIGHT;
     }
 
-    int out_width = 0, out_height = 0;
-    SDL_GetCurrentRenderOutputSize(gSDLRenderer, &out_width, &out_height);
-    SDL_FRect dst_rect = calDstRect(out_width, out_height, textureWidth, textureHeight);
-    SDL_SetRenderDrawColor(gSDLRenderer, 0, 0, 0, 255);
-    SDL_RenderClear(gSDLRenderer);
-    SDL_RenderTexture(gSDLRenderer, texture, nullptr, &dst_rect); // use all texture
+    {
+        const CpuScope present(CpuStage::Present);
+        int out_width = 0, out_height = 0;
+        SDL_GetCurrentRenderOutputSize(gSDLRenderer, &out_width, &out_height);
+        SDL_FRect dst_rect = calDstRect(out_width, out_height, textureWidth, textureHeight);
+        SDL_SetRenderDrawColor(gSDLRenderer, 0, 0, 0, 255);
+        SDL_RenderClear(gSDLRenderer);
+        SDL_RenderTexture(gSDLRenderer, texture, nullptr, &dst_rect); // use all texture
+    }
 
+    // Taken before the overlay is drawn, so screenshots never contain the profiler window.
     if (gScreenshotRequested) {
         gScreenshotRequested = false;
         saveScreenshot(gScreenshotPath.empty() ? nextScreenshotPath() : gScreenshotPath);
     }
 
-    SDL_RenderPresent(gSDLRenderer); // Future need: change to SDL_LockTexture
+    if (gImGuiActive) {
+        drawUi();
+    }
+
+    PROFILE_CPU(CpuStage::Present, SDL_RenderPresent(gSDLRenderer)); // Future need: change to SDL_LockTexture
 }
 
 void updateWindowTitle(Uint64 ticks) {
@@ -294,7 +365,8 @@ void updateWindowTitle(Uint64 ticks) {
     const double fps = frames * 1000.0 / static_cast<double>(ticks - last_ticks);
     const std::string title = "MiniFluid - " + std::string(gPresets[gPresetIndex].name)
         + " - " + std::to_string(static_cast<int>(fps + 0.5)) + " FPS"
-        + (PAUSE ? " (paused)" : "");
+        + (PAUSE ? " (paused)" : "")
+        + (profiler().recording() ? " [REC]" : "");
     SDL_SetWindowTitle(gSDLWindow, title.c_str());
     last_ticks = ticks;
     frames = 0;
@@ -303,27 +375,35 @@ void updateWindowTitle(Uint64 ticks) {
 void loop() {
     static Uint64 prev_ticks = SDL_GetTicks();
     static double accumulator = 0.0;
-    constexpr double simulation_dt = 1.0 / 60.0;
     constexpr int max_step_per_frame = 4;
+
+    FrameProfiler& frameProfiler = profiler();
+    frameProfiler.beginFrame();
 
     const Uint64 cur_ticks = SDL_GetTicks();
     double frame_dt = static_cast<double>(cur_ticks - prev_ticks) / 1000.0;
     prev_ticks = cur_ticks;
 
     frame_dt = std::min(frame_dt, 0.1);
-    if (!update(static_cast<float>(frame_dt))) {
+    bool running;
+    PROFILE_CPU(CpuStage::Input, running = update(static_cast<float>(frame_dt)));
+    if (!running) {
         gDone = 1;
         return;
     }
 
+    int steps = 0;
     if (PAUSE) {
         accumulator = 0.0;
     } else {
+        const CpuScope simulation(CpuStage::Simulation);
+        if (frameProfiler.wantsDiagnostics()) {
+            solver.requestDiagnostics();
+        }
         accumulator += frame_dt;
-        int steps = 0;
-        while (accumulator >= simulation_dt && steps < max_step_per_frame) {
-            TIME(solver.step(static_cast<float>(simulation_dt)));
-            accumulator -= simulation_dt;
+        while (accumulator >= SIMULATION_DT && steps < max_step_per_frame) {
+            solver.step(static_cast<float>(SIMULATION_DT));
+            accumulator -= SIMULATION_DT;
             steps++;
         }
         if (steps == max_step_per_frame) {
@@ -331,13 +411,20 @@ void loop() {
         }
     }
 
-    TIME(render(cur_ticks));
+    render(cur_ticks);
     updateWindowTitle(cur_ticks);
+
+    // The render readback has already waited for the GPU, so this copy does not stall.
+    SolverDiagnostics diagnostics;
+    if (solver.fetchDiagnostics(diagnostics)) {
+        frameProfiler.setDiagnostics(diagnostics);
+    }
+    frameProfiler.endFrame(steps);
 }
 
 // Offline capture: advance a fixed number of steps, render once, save, and exit.
 void capture(int steps, const std::string& path) {
-    constexpr float simulation_dt = 1.0f / 60.0f;
+    constexpr float simulation_dt = static_cast<float>(SIMULATION_DT);
     const Uint64 start = SDL_GetTicksNS();
     for (int step = 0; step < steps; ++step) {
         solver.step(simulation_dt);
@@ -380,6 +467,12 @@ static int run(int argc, char** argv) {
     std::string capturePath = "capture.bmp";
     bool unlit = false;
     bool emission = false;
+#ifdef PROFILE
+    bool showProfiler = true;
+#else
+    bool showProfiler = false;
+#endif
+    std::string profileRecordPath;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--preset" && i + 1 < argc) {
@@ -393,6 +486,10 @@ static int run(int argc, char** argv) {
             unlit = true;
         } else if (argument == "--emission") {
             emission = true;
+        } else if (argument == "--profile") {
+            showProfiler = true;
+        } else if (argument == "--profile-record" && i + 1 < argc) {
+            profileRecordPath = argv[++i];
         }
     }
 
@@ -420,6 +517,16 @@ static int run(int argc, char** argv) {
         }
     }
 
+    if (const char* basePath = SDL_GetBasePath()) {
+        gOutputDirectory = basePath;
+    }
+    cudaDeviceProp deviceProperties{};
+    int device = 0;
+    if (cudaGetDevice(&device) == cudaSuccess
+        && cudaGetDeviceProperties(&deviceProperties, device) == cudaSuccess) {
+        gGpuName = deviceProperties.name;
+    }
+
     OnInit();
     applyPreset(initialPreset);
     cudaRenderer->lighting().lit = !unlit;
@@ -428,11 +535,35 @@ static int run(int argc, char** argv) {
     if (captureSteps >= 0) {
         capture(captureSteps, capturePath);
     } else {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui::GetIO().IniFilename = nullptr;
+        ImGui::StyleColorsDark();
+        ImGui_ImplSDL3_InitForSDLRenderer(gSDLWindow, gSDLRenderer);
+        ImGui_ImplSDLRenderer3_Init(gSDLRenderer);
+        gImGuiActive = true;
+
+        profiler().setWindowVisible(showProfiler);
+        if (!profileRecordPath.empty()) {
+            if (profiler().startRecording(profileRecordPath)) {
+                SDL_Log("Recording profile to %s", profileRecordPath.c_str());
+            } else {
+                SDL_Log("Failed to open profile recording %s", profileRecordPath.c_str());
+            }
+        }
+
         gDone = 0;
         while(!gDone) {
             loop();
         }
+
+        profiler().stopRecording();
+        gImGuiActive = false;
+        ImGui_ImplSDLRenderer3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
     }
+    profiler().releaseGpuResources();
 
     SDL_DestroyTexture(gSliceTexture);
     SDL_DestroyTexture(gRenderTexture);

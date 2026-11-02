@@ -1,7 +1,10 @@
 #include "cuda_fluid_solver.h"
 
+#include "profile/profiler.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -594,6 +597,13 @@ struct BoundaryWeights {
     float side;  // 0 for closed x and z faces
 };
 
+// A level with spacing ratio r = h_level / h has its top cell center r / 2 + 1 / 2 fine
+// cells below the zero-pressure ghost of the finest level.
+BoundaryWeights boundaryWeights(const SmokeParameters& params, float ratio) {
+    const float open = 2.0f * ratio / (ratio + 1.0f);
+    return BoundaryWeights{params.openTop ? open : 0.0f, params.openSides ? open : 0.0f};
+}
+
 struct PoissonNeighbors {
     float sum;
     float count;
@@ -809,6 +819,80 @@ void launchPressureGradientKernel(
     CUDA_CHECK(cudaGetLastError());
 }
 
+// Sum, sum of squares, and maximum magnitude of a grid, accumulated into one slot.
+// Each block reduces in registers and shared memory and then adds its result atomically.
+constexpr int kReduceThreads = 256;
+
+__global__ void reduceKernel(const float* values, size_t count, DiagnosticReduction* slot) {
+    double sum = 0.0;
+    double sum_squares = 0.0;
+    unsigned int max_bits = 0;
+    const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+    for (size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         index < count; index += stride) {
+        const float value = values[index];
+        sum += value;
+        sum_squares += static_cast<double>(value) * value;
+        // For non-negative floats the bit patterns order like the values, and NaN sorts last.
+        max_bits = max(max_bits, __float_as_uint(fabsf(value)));
+    }
+
+    for (int offset = 16; offset > 0; offset /= 2) {
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        sum_squares += __shfl_down_sync(0xffffffffu, sum_squares, offset);
+        max_bits = max(max_bits, __shfl_down_sync(0xffffffffu, max_bits, offset));
+    }
+
+    __shared__ double warp_sums[kReduceThreads / 32];
+    __shared__ double warp_squares[kReduceThreads / 32];
+    __shared__ unsigned int warp_max[kReduceThreads / 32];
+    const int lane = threadIdx.x % 32;
+    const int warp = threadIdx.x / 32;
+    if (lane == 0) {
+        warp_sums[warp] = sum;
+        warp_squares[warp] = sum_squares;
+        warp_max[warp] = max_bits;
+    }
+    __syncthreads();
+    if (warp != 0) {
+        return;
+    }
+
+    const bool active = lane < kReduceThreads / 32;
+    sum = active ? warp_sums[lane] : 0.0;
+    sum_squares = active ? warp_squares[lane] : 0.0;
+    max_bits = active ? warp_max[lane] : 0u;
+    for (int offset = 16; offset > 0; offset /= 2) {
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+        sum_squares += __shfl_down_sync(0xffffffffu, sum_squares, offset);
+        max_bits = max(max_bits, __shfl_down_sync(0xffffffffu, max_bits, offset));
+    }
+    if (lane == 0) {
+        atomicAdd(&slot->sum, sum);
+        atomicAdd(&slot->sumSquares, sum_squares);
+        atomicMax(&slot->maxAbsBits, max_bits);
+    }
+}
+
+void launchReduce(GridView3D<const float> grid, DiagnosticReduction* slot) {
+    const size_t count = grid.size();
+    const size_t blocks = std::min<size_t>((count + kReduceThreads - 1) / kReduceThreads, 1024);
+    reduceKernel<<<static_cast<unsigned int>(blocks), kReduceThreads>>>(grid.data, count, slot);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+enum DiagnosticSlot {
+    kDivergenceBefore,
+    kResidual,
+    kDivergenceAfter,
+    kVelocityU,
+    kVelocityV,
+    kVelocityW,
+    kDensity,
+    kTemperature,
+    kDiagnosticSlotCount
+};
+
 } // namespace
 
 CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
@@ -828,7 +912,8 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
       divergence_(nx, ny, nz),
       residual_(nx, ny, nz),
       vorticity_(checkedElementCount(nx, ny, nz)),
-      cell_force_(checkedElementCount(nx, ny, nz)) {
+      cell_force_(checkedElementCount(nx, ny, nz)),
+      diagnostic_reductions_(kDiagnosticSlotCount) {
     // Coarsen while every dimension stays even and the grid is not yet tiny.
     int level_nx = nx;
     int level_ny = ny;
@@ -1038,22 +1123,16 @@ void CudaFluidSolver::computeDivergence() {
 void CudaFluidSolver::solvePressure(float dt, int cycles) {
     // The previous step's pressure is kept as the initial guess (warm start).
     const float h = macgrid_.spacing();
-    // A level with spacing ratio r = h_level / h has its top cell center r / 2 + 1 / 2 fine
-    // cells below the zero-pressure ghost of the finest level.
-    const auto weights = [this](float ratio) {
-        const float open = 2.0f * ratio / (ratio + 1.0f);
-        return BoundaryWeights{params_.openTop ? open : 0.0f, params_.openSides ? open : 0.0f};
-    };
     std::vector<PoissonLevel> levels;
     levels.push_back(PoissonLevel{
         macgrid_.pressure().view(), constView(divergence_), GridView3D<float>(),
-        residual_.view(), h * h * macgrid_.rho() / dt, weights(1.0f)});
+        residual_.view(), h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f)});
     float ratio = 1.0f;
     for (MultigridLevel& level : coarse_levels_) {
         ratio *= 2.0f;
         levels.push_back(PoissonLevel{
             level.pressure.view(), constView(level.rhs), level.rhs.view(),
-            level.residual.view(), 4.0f, weights(ratio)});
+            level.residual.view(), 4.0f, boundaryWeights(params_, ratio)});
     }
 
     for (int cycle = 0; cycle < cycles; ++cycle) {
@@ -1114,16 +1193,102 @@ void CudaFluidSolver::advectDensity(float dt) {
 }
 
 void CudaFluidSolver::step(float dt) {
-    TIME(advectVelocity(dt));
-    TIME(addSources(dt));
-    TIME(addForces(dt));
-    TIME(enforceBoundaryVelocity());
+    PROFILE_GPU(GpuStage::AdvectVelocity, advectVelocity(dt));
+    PROFILE_GPU(GpuStage::Sources, addSources(dt));
+    PROFILE_GPU(GpuStage::Forces, addForces(dt));
+    PROFILE_GPU(GpuStage::Boundary, enforceBoundaryVelocity());
 
-    TIME(computeDivergence());
-    TIME(solvePressure(dt, params_.pressureCycles));
-    TIME(applyPressureGradient(dt));
-    // computeDivergence();
+    PROFILE_GPU(GpuStage::Divergence, computeDivergence());
+    PROFILE_GPU(GpuStage::Pressure, solvePressure(dt, params_.pressureCycles));
+    PROFILE_GPU(GpuStage::Projection, applyPressureGradient(dt));
 
-    TIME(advectDensity(dt));
+    PROFILE_GPU(GpuStage::AdvectScalars, advectDensity(dt));
     time_ += dt;
+
+    if (diagnostics_requested_) {
+        diagnostics_requested_ = false;
+        PROFILE_GPU(GpuStage::Diagnostics, computeDiagnostics(dt));
+    }
+}
+
+// Runs after the step: pressure and the pre-projection divergence are still those of the
+// solve, and advecting the scalars does not change velocity. residual_ is only scratch
+// inside the V-cycle, so it holds the residual and then the post-projection divergence.
+void CudaFluidSolver::computeDiagnostics(float dt) {
+    clearDeviceBuffer(diagnostic_reductions_);
+    DiagnosticReduction* slots = diagnostic_reductions_.data();
+    const float h = macgrid_.spacing();
+    const dim3 threads(8, 8, 4);
+    const GridView3D<float> scratch = residual_.view();
+    const dim3 blocks = blocksFor(scratch.nx, scratch.ny, scratch.nz, threads);
+
+    launchReduce(constView(divergence_), slots + kDivergenceBefore);
+
+    residualKernel<<<blocks, threads>>>(
+        scratch, constView(macgrid_.pressure()), constView(divergence_),
+        h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f));
+    CUDA_CHECK(cudaGetLastError());
+    launchReduce(constView(residual_), slots + kResidual);
+
+    computeDivergenceKernel<<<blocks, threads>>>(
+        scratch,
+        constView(macgrid_.u()), constView(macgrid_.v()), constView(macgrid_.w()),
+        h);
+    CUDA_CHECK(cudaGetLastError());
+    launchReduce(constView(residual_), slots + kDivergenceAfter);
+
+    launchReduce(constView(macgrid_.u()), slots + kVelocityU);
+    launchReduce(constView(macgrid_.v()), slots + kVelocityV);
+    launchReduce(constView(macgrid_.w()), slots + kVelocityW);
+    launchReduce(constView(density_), slots + kDensity);
+    launchReduce(constView(temperature_), slots + kTemperature);
+
+    diagnostics_pending_ = true;
+    diagnostics_dt_ = dt;
+    diagnostics_time_ = time_;
+}
+
+bool CudaFluidSolver::fetchDiagnostics(SolverDiagnostics& out) {
+    if (!diagnostics_pending_) {
+        return false;
+    }
+    diagnostics_pending_ = false;
+
+    std::vector<DiagnosticReduction> r(kDiagnosticSlotCount);
+    CUDA_CHECK(cudaMemcpy(r.data(), diagnostic_reductions_.data(),
+        r.size() * sizeof(DiagnosticReduction), cudaMemcpyDeviceToHost));
+
+    const auto maxAbs = [&](int slot) {
+        float value;
+        std::memcpy(&value, &r[slot].maxAbsBits, sizeof(value));
+        return value;
+    };
+    const auto rms = [&](int slot, size_t count) {
+        return static_cast<float>(std::sqrt(r[slot].sumSquares / static_cast<double>(count)));
+    };
+
+    const size_t cells = divergence_.size();
+    const double h = macgrid_.spacing();
+    const double cell_volume = h * h * h;
+    const double rhs_scale = h * h * macgrid_.rho() / diagnostics_dt_;
+
+    out.time = diagnostics_time_;
+    out.divergenceBeforeMax = maxAbs(kDivergenceBefore);
+    out.divergenceBeforeRms = rms(kDivergenceBefore, cells);
+    out.divergenceAfterMax = maxAbs(kDivergenceAfter);
+    out.divergenceAfterRms = rms(kDivergenceAfter, cells);
+    // The finest level solves A p = rhs_scale * divergence.
+    const double rhs_norm = rhs_scale * std::sqrt(r[kDivergenceBefore].sumSquares);
+    out.pressureResidual = rhs_norm > 0.0
+        ? static_cast<float>(std::sqrt(r[kResidual].sumSquares) / rhs_norm)
+        : 0.0f;
+    out.maxSpeed = std::max({maxAbs(kVelocityU), maxAbs(kVelocityV), maxAbs(kVelocityW)});
+    out.cfl = static_cast<float>(out.maxSpeed * diagnostics_dt_ / h);
+    const double velocity_squares = r[kVelocityU].sumSquares
+        + r[kVelocityV].sumSquares + r[kVelocityW].sumSquares;
+    out.kineticEnergy = static_cast<float>(0.5 * macgrid_.rho() * velocity_squares * cell_volume);
+    out.smokeMass = static_cast<float>(r[kDensity].sum * cell_volume);
+    out.maxDensity = maxAbs(kDensity);
+    out.maxTemperature = maxAbs(kTemperature);
+    return true;
 }
