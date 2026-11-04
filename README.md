@@ -353,3 +353,6 @@ The CPU solvers are available in the source tree, but the current application ha
 多重网格的开放边界：最初每一层都把零压力的虚拟单元放在一个单元格之外，粗网格上边界位置因此错位，求解在几步之内就发散了。现在每一层按比例调整边界项，使边界停在同一物理位置。
 速度场的 MacCormack 默认关闭：它和涡度约束叠加后会放大网格尺度的噪声，画面上表现为颗粒感，所以只对密度和温度启用。这个开关在 SmokeParameters 中。
 发射源噪声：噪声原本有一层频率接近网格分辨率，同样会产生颗粒感，已减为两层。
+
+Luhar
+Pantano: simulation for parachuttes
