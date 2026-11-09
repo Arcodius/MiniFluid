@@ -13,7 +13,9 @@ class CudaFluidSolver;
 class VolumeTexture {
 public:
     VolumeTexture() = default;
-    VolumeTexture(int nx, int ny, int nz, cudaChannelFormatDesc format, bool writable);
+    // clampToEdge: repeat edge texels outside the grid instead of returning zero (needed for distance fields).
+    VolumeTexture(int nx, int ny, int nz, cudaChannelFormatDesc format, bool writable,
+        bool clampToEdge = false);
     ~VolumeTexture() noexcept;
 
     VolumeTexture(const VolumeTexture&) = delete;
@@ -66,6 +68,7 @@ private:
     VolumeTexture density_;
     VolumeTexture temperature_;
     VolumeTexture lightDepth_;     // float2: optical depth toward the sun, and toward the sky
+    VolumeTexture sdf_;            // Signed distance to the solid, clamped at the domain edge
     DeviceBuffer<float> skyDepth_;
     LightingSettings lighting_;
 

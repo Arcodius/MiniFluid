@@ -81,7 +81,8 @@ private:
     DeviceGrid3D temperature_scratch_;
     DeviceGrid3D divergence_;
     DeviceGrid3D residual_;
-    DeviceGrid3D solid_;
+    DeviceGrid3D solid_; // Binary field which indicates solid existence
+    DeviceGrid3D phi_;  // Signed distance to the solid (negative inside); used by the renderer only
     DeviceBuffer<float4> vorticity_;
     DeviceBuffer<float4> cell_force_;
 
@@ -118,6 +119,7 @@ public:
     int multigridLevels() const noexcept { return static_cast<int>(coarse_levels_.size()) + 1; }
     GridView3D<const float> densityView() const noexcept { return density_.view(); }
     GridView3D<const float> temperatureView() const noexcept { return temperature_.view(); }
+    GridView3D<const float> sdfView() const noexcept { return phi_.view(); }
 
     SmokeParameters& parameters() noexcept { return params_; }
     const SmokeParameters& parameters() const noexcept { return params_; }

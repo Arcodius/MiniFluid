@@ -1039,6 +1039,7 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
       divergence_(nx, ny, nz),
       residual_(nx, ny, nz),
       solid_(nx, ny, nz),
+      phi_(nx, ny, nz),
       vorticity_(checkedElementCount(nx, ny, nz)),
       cell_force_(checkedElementCount(nx, ny, nz)),
       diagnostic_reductions_(kDiagnosticSlotCount) {
@@ -1063,6 +1064,8 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
     for (MultigridLevel& level : coarse_levels_) {
         clearDeviceGrid(level.solid);
     }
+    // With no solid, the distance field is "very far from everything" (zero would mean "on the surface").
+    phi_.upload(Grid3D(nx, ny, nz, 1.0f, 1000.0f));
 
     emitters_.push_back(SmokeEmitter{});
     reset();
@@ -1368,16 +1371,20 @@ void CudaFluidSolver::step(float dt) {
 void CudaFluidSolver::setSphereSolid(float3 center, float radius) {
     SphereSDF s{center, radius};
     Grid3D mask(nx(), ny(), nz(), spacing());
+    Grid3D distance(nx(), ny(), nz(), spacing());
     const float h = spacing();
     for (int k = 0; k < nz(); ++k) {
         for (int j = 0; j < ny(); ++j) {
             for (int i = 0; i < nx(); ++i) {
                 float3 p = make_float3((i+0.5f)*h, (j+0.5f)*h, (k+0.5f)*h);
-                mask(i, j, k) = s.phi(p) < 0.0f ? 1.0f : 0.0f;
+                const float d = s.phi(p);
+                distance(i, j, k) = d;
+                mask(i, j, k) = d < 0.0f ? 1.0f : 0.0f;
             }
         }
     }
     solid_.upload(mask);
+    phi_.upload(distance);
     rebuildCoarseSolids();
 }
 

@@ -3,6 +3,7 @@
 #include "camera.h"
 #include "cuda/cuda_fluid_solver.h"
 #include "profile/profiler.h"
+#include "solids/sdf.h"
 
 #include <cfloat>
 #include <cmath>
@@ -39,6 +40,9 @@ struct RenderParams {
 };
 
 constexpr float kPi = 3.14159265358979f;
+// Stand-in optical depth for "blocked by a solid": exp(-30) is effectively zero light.
+// It is finite on purpose, because the light volume is linearly filtered and inf * 0 is NaN.
+constexpr float kOpaqueDepth = 30.0f;
 
 __host__ __device__ float3 add(float3 a, float3 b) {
     return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
@@ -140,13 +144,61 @@ __device__ float opticalDepthToLight(
     return tau;
 }
 
+__device__ float sampleSdf(cudaTextureObject_t sdf, float3 p, float invCellSize) {
+    return tex3D<float>(sdf, p.x * invCellSize, p.y * invCellSize, p.z * invCellSize);
+}
+
+// Sphere tracing against the signed distance texture. The texture only exists inside the simulation box, so the ray is first clipped to it. Returns true and the distance along the ray when the surface is reached before maxDistance.
+__device__ bool traceSolid(
+    cudaTextureObject_t sdf,
+    float3 origin,
+    float3 direction,
+    float maxDistance,
+    const RenderParams& params,
+    float& hitDistance) {
+    float entry;
+    float exit;
+    if (!intersectVolume(origin, direction, params.bounds, entry, exit)) {
+        return false;
+    }
+    exit = fminf(exit, maxDistance);
+
+    const float invCellSize = 1.0f / params.cellSize;
+    const float hitEpsilon = 0.05f * params.cellSize;
+    float t = entry;
+    for (int step = 0; step < 128 && t < exit; ++step) {
+        const float d = sampleSdf(sdf, add(origin, multiply(direction, t)), invCellSize);
+        if (d < hitEpsilon) {
+            hitDistance = t;
+            return true;
+        }
+        // The distance field says nothing closer than d exists, so a step of d cannot tunnel through the surface. 0.9 leaves a margin for interpolation error in the texture.
+        t += 0.9f * d;
+    }
+    return false;
+}
+
+// The surface normal is the normalized gradient of the distance field (central differences).
+__device__ float3 sdfNormal(cudaTextureObject_t sdf, float3 p, const RenderParams& params) {
+    const float invCellSize = 1.0f / params.cellSize;
+    const float e = params.cellSize;
+    const float3 gradient = make_float3(
+        sampleSdf(sdf, make_float3(p.x + e, p.y, p.z), invCellSize)
+            - sampleSdf(sdf, make_float3(p.x - e, p.y, p.z), invCellSize),
+        sampleSdf(sdf, make_float3(p.x, p.y + e, p.z), invCellSize)
+            - sampleSdf(sdf, make_float3(p.x, p.y - e, p.z), invCellSize),
+        sampleSdf(sdf, make_float3(p.x, p.y, p.z + e), invCellSize)
+            - sampleSdf(sdf, make_float3(p.x, p.y, p.z - e), invCellSize));
+    return normalize(gradient);
+}
+
 // ---------------------------------------------------------------------------
 // Light volume
 // ---------------------------------------------------------------------------
 
 // Optical depth from each cell straight up to the top of the domain: a cheap sky-occlusion term.
 __global__ void skyDepthKernel(
-    GridView3D<const float> density, float* skyDepth, float extinctionTimesCell) {
+    GridView3D<const float> density, GridView3D<const float> sdf, float* skyDepth, float extinctionTimesCell) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= density.nx || k >= density.nz) {
@@ -157,6 +209,10 @@ __global__ void skyDepthKernel(
     for (int j = density.ny - 1; j >= 0; --j) {
         const float value = fmaxf(density(i, j, k), 0.0f) * extinctionTimesCell;
         const size_t index = (static_cast<size_t>(k) * density.ny + j) * density.nx + i;
+        // Walking down the column, entering a solid blocks the sky for it and everything below.
+        if (sdf(i, j, k) < 0.0f) {
+            accumulated = kOpaqueDepth;
+        }
         skyDepth[index] = accumulated + 0.5f * value;
         accumulated += value;
     }
@@ -164,6 +220,7 @@ __global__ void skyDepthKernel(
 
 __global__ void lightDepthKernel(
     cudaTextureObject_t density,
+    cudaTextureObject_t sdf,
     const float* skyDepth,
     cudaSurfaceObject_t lightDepth,
     int nx,
@@ -181,7 +238,11 @@ __global__ void lightDepthKernel(
         (i + 0.5f) * params.cellSize,
         (j + 0.5f) * params.cellSize,
         (k + 0.5f) * params.cellSize);
-    const float tau = opticalDepthToLight(density, p, params, 1.0f);
+    // Trace from the cell toward the sun: if the solid is in the way, the cell is in shadow.
+    float blockedAt;
+    const float tau = traceSolid(sdf, p, params.lightDirection, FLT_MAX, params, blockedAt)
+        ? kOpaqueDepth
+        : opticalDepthToLight(density, p, params, 1.0f);
     const size_t index = (static_cast<size_t>(k) * ny + j) * nx + i;
     surf3Dwrite(make_float2(tau, skyDepth[index]), lightDepth, i * sizeof(float2), j, k);
 }
@@ -211,13 +272,18 @@ __device__ float3 floorColor(
     float distance,
     cudaTextureObject_t density,
     cudaTextureObject_t lightDepth,
+    cudaTextureObject_t sdf,
     const RenderParams& params) {
     const float tile = 0.25f;
     const int checker = (static_cast<int>(floorf(p.x / tile)) + static_cast<int>(floorf(p.z / tile))) & 1;
     const float contrast = expf(-distance * 0.35f);
     const float albedo = 0.34f + (checker ? 0.05f : -0.02f) * contrast;
 
-    const float shadow = expf(-opticalDepthToLight(density, p, params, 1.5f));
+    float shadow = expf(-opticalDepthToLight(density, p, params, 1.5f));
+    float blockedAt;
+    if (traceSolid(sdf, p, params.lightDirection, FLT_MAX, params, blockedAt)) {
+        shadow = 0.0f;  // The solid casts a shadow onto the floor
+    }
     float occlusion = 1.0f;
     if (p.x > 0.0f && p.z > 0.0f && p.x < params.bounds.x && p.z < params.bounds.z) {
         const float invCellSize = 1.0f / params.cellSize;
@@ -231,6 +297,31 @@ __device__ float3 floorColor(
         multiply(params.sunRadiance, sunFactor),
         multiply(params.skyRadiance, occlusion));
     const float3 color = multiply(lit, albedo);
+
+    const float haze = 1.0f - expf(-distance * 0.12f);
+    return mix(color, skyColor(direction, params), haze);
+}
+
+// Shading of the solid at hit point p: Lambert sun light (dimmed by smoke between the surface
+// and the sun) plus a hemispherical sky term, then the same distance haze as the floor.
+__device__ float3 solidColor(
+    float3 p,
+    float3 direction,
+    float distance,
+    cudaTextureObject_t density,
+    cudaTextureObject_t sdf,
+    const RenderParams& params) {
+    const float3 albedo = make_float3(0.62f, 0.34f, 0.26f);
+    const float3 normal = sdfNormal(sdf, p, params);
+
+    const float smokeShadow = expf(-opticalDepthToLight(density, p, params, 1.5f));
+    const float diffuse = fmaxf(dot(normal, params.lightDirection), 0.0f) * smokeShadow;
+    const float skyAmount = 0.5f + 0.5f * normal.y;  // Facing up sees more sky than facing down
+
+    const float3 lit = add(
+        multiply(params.sunRadiance, diffuse),
+        multiply(params.skyRadiance, skyAmount));
+    const float3 color = make_float3(lit.x * albedo.x, lit.y * albedo.y, lit.z * albedo.z);
 
     const float haze = 1.0f - expf(-distance * 0.12f);
     return mix(color, skyColor(direction, params), haze);
@@ -257,6 +348,7 @@ __global__ void renderKernel(
     cudaTextureObject_t density,
     cudaTextureObject_t temperature,
     cudaTextureObject_t lightDepth,
+    cudaTextureObject_t sdf,
     RenderParams params,
     RenderCamera camera,
     int width,
@@ -296,8 +388,19 @@ __global__ void renderKernel(
     float transmittance = 1.0f;
     float entry;
     float exit;
+    // Nearest opaque surface along the ray. The solid is only searched for up to the floor, so
+    // whichever of the two is hit first wins.
+    float solidDistance = FLT_MAX;
+    if (params.lit) {
+        float hit;
+        if (traceSolid(sdf, origin, direction, floorDistance, params, hit)) {
+            solidDistance = hit;
+        }
+    }
     if (intersectVolume(origin, direction, params.bounds, entry, exit)) {
-        exit = fminf(exit, floorDistance);
+        // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
+        const float surfaceDistance = fminf(floorDistance, solidDistance);
+        exit = fminf(exit, surfaceDistance);
         const float stepSize = params.cellSize * 0.5f;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
         float distance = entry + stepSize * jitter;
@@ -362,9 +465,12 @@ __global__ void renderKernel(
 
     if (params.lit && transmittance > 0.003f) {
         float3 background;
-        if (floorDistance < FLT_MAX) {
+        if (solidDistance < FLT_MAX) {
+            const float3 p = add(origin, multiply(direction, solidDistance));
+            background = solidColor(p, direction, solidDistance, density, sdf, params);
+        } else if (floorDistance < FLT_MAX) {
             const float3 p = add(origin, multiply(direction, floorDistance));
-            background = floorColor(p, direction, floorDistance, density, lightDepth, params);
+            background = floorColor(p, direction, floorDistance, density, lightDepth, sdf, params);
         } else {
             background = skyColor(direction, params);
         }
@@ -386,7 +492,8 @@ float3 toFloat3(const Vector3& value) {
 
 }
 
-VolumeTexture::VolumeTexture(int nx, int ny, int nz, cudaChannelFormatDesc format, bool writable)
+VolumeTexture::VolumeTexture(
+    int nx, int ny, int nz, cudaChannelFormatDesc format, bool writable, bool clampToEdge)
     : nx_(nx), ny_(ny), nz_(nz) {
     CUDA_CHECK(cudaMalloc3DArray(&array_, &format, make_cudaExtent(nx, ny, nz),
         writable ? cudaArraySurfaceLoadStore : cudaArrayDefault));
@@ -396,9 +503,11 @@ VolumeTexture::VolumeTexture(int nx, int ny, int nz, cudaChannelFormatDesc forma
     resource.res.array.array = array_;
 
     cudaTextureDesc description{};
-    description.addressMode[0] = cudaAddressModeBorder;
-    description.addressMode[1] = cudaAddressModeBorder;
-    description.addressMode[2] = cudaAddressModeBorder;
+    const cudaTextureAddressMode addressMode =
+        clampToEdge ? cudaAddressModeClamp : cudaAddressModeBorder;
+    description.addressMode[0] = addressMode;
+    description.addressMode[1] = addressMode;
+    description.addressMode[2] = addressMode;
     description.filterMode = cudaFilterModeLinear;
     description.readMode = cudaReadModeElementType;
     description.normalizedCoords = 0;
@@ -472,6 +581,7 @@ CudaRenderer::CudaRenderer(
       density_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false),
       temperature_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false),
       lightDepth_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float2>(), true),
+      sdf_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false, true),
       skyDepth_(checkedElementCount(solver.nx(), solver.ny(), solver.nz())) {
     setResolution(resolution.first, resolution.second);
 }
@@ -529,7 +639,9 @@ RenderParams makeRenderParams(const CudaFluidSolver& solver, const LightingSetti
 
 void CudaRenderer::updateVolumes() {
     const GridView3D<const float> density = solver_.densityView();
+    const GridView3D<const float> sdf = solver_.sdfView();
     density_.copyFrom(density);
+    sdf_.copyFrom(sdf);
     if (lighting_.emission) {
         temperature_.copyFrom(solver_.temperatureView());
     }
@@ -543,7 +655,7 @@ void CudaRenderer::updateVolumes() {
         (density.nx + columnThreads.x - 1) / columnThreads.x,
         (density.nz + columnThreads.y - 1) / columnThreads.y);
     skyDepthKernel<<<columnBlocks, columnThreads>>>(
-        density, skyDepth_.data(), params.extinction * params.cellSize);
+        density, sdf, skyDepth_.data(), params.extinction * params.cellSize);
     CUDA_CHECK(cudaGetLastError());
 
     const dim3 threads(8, 8, 4);
@@ -552,7 +664,7 @@ void CudaRenderer::updateVolumes() {
         (density.ny + threads.y - 1) / threads.y,
         (density.nz + threads.z - 1) / threads.z);
     lightDepthKernel<<<blocks, threads>>>(
-        density_.texture(), skyDepth_.data(), lightDepth_.surface(),
+        density_.texture(), sdf_.texture(), skyDepth_.data(), lightDepth_.surface(),
         density.nx, density.ny, density.nz, params);
     CUDA_CHECK(cudaGetLastError());
 }
@@ -588,7 +700,7 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     {
         const GpuScope scope(GpuStage::RayMarch);
         renderKernel<<<blocks, threads>>>(
-            density_.texture(), temperature_.texture(), lightDepth_.texture(),
+            density_.texture(), temperature_.texture(), lightDepth_.texture(), sdf_.texture(),
             makeRenderParams(solver_, lighting_), renderCamera,
             static_cast<int>(width_), static_cast<int>(height_), devicePixels_.data());
         CUDA_CHECK(cudaGetLastError());
