@@ -1,7 +1,8 @@
 #pragma once
 
 #include <cuda_runtime.h>
-#include <cmath>
+
+#include "grid.h"
 
 __host__ __device__ inline float3 operator-(float3 a, float3 b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
 __host__ __device__ inline float  length(float3 a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
@@ -23,7 +24,7 @@ __host__ __device__ float3 sdfGradient(const Shape& s, float3 p, float eps) {
         s.phi({p.x, p.y, p.z+eps}) - s.phi({p.x, p.y, p.z-eps})
     };
     float len = length(g);
-    return len > 1e-8f ? float3(g.x/len, g.y/len, g.z/len) : float3(0, 0, 0);
+    return len > 1e-8f ? make_float3(g.x/len, g.y/len, g.z/len) : make_float3(0, 0, 0);
 }
 
 template <class Shape>

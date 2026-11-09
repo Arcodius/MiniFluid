@@ -104,6 +104,9 @@ void OnInit() {
     camera->setPosition(center + Vector3(0.95f, 0.12f, 1.65f));
     camera->lookAt(center);
     cudaRenderer = new CudaRenderer(solver, *camera, {RENDER_WIDTH, RENDER_HEIGHT});
+
+    // World units: the domain spans [0, 1] in x and z (h = 1 / SIM_W), and 1.5 in y.
+    solver.setSphereSolid(make_float3(0.5f, 0.5f, 0.5f), 0.25f);
 }
 
 bool update(float deltaTime) {

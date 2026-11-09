@@ -1,6 +1,7 @@
 #include "cuda_fluid_solver.h"
 
 #include "profile/profiler.h"
+#include "solids/sdf.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +35,74 @@ dim3 blocksFor(int nx, int ny, int nz, dim3 threads) {
         (nx + threads.x - 1) / threads.x,
         (ny + threads.y - 1) / threads.y,
         (nz + threads.z - 1) / threads.z);
+}
+
+__device__ bool isSolid(GridView3D<const float> s, int i, int j, int k) {
+    if (i < 0 || j < 0 || k < 0 || i >= s.nx || j >= s.ny || k >= s.nz) return false;
+    return s(i, j, k) > 0.5f; // used for a binary mask
+}
+
+__global__ void solidUKernel(GridView3D<float> u, GridView3D<const float> solid) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= u.nx || j >= u.ny || k >= u.nz) return;
+
+    if (isSolid(solid, i-1, j, k) || isSolid(solid, i, j, k)) u(i, j, k) = 0.0f;
+}
+
+__global__ void solidVKernel(GridView3D<float> v, GridView3D<const float> solid) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= v.nx || j >= v.ny || k >= v.nz) return;
+
+    if (isSolid(solid, i, j-1, k) || isSolid(solid, i, j, k)) v(i, j, k) = 0.0f;
+}
+
+__global__ void solidWKernel(GridView3D<float> w, GridView3D<const float> solid) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= w.nx || j >= w.ny || k >= w.nz) return;
+
+    if (isSolid(solid, i, j, k-1) || isSolid(solid, i, j, k)) w(i, j, k) = 0.0f;
+}
+
+// A coarse cell is solid only if all 8 of its fine children are solid. Partially solid cells stay fluid, so the coarse operator never closes off a channel the fine level still has open.
+__global__ void restrictSolidKernel(
+    GridView3D<float> coarse_solid,
+    GridView3D<const float> fine_solid) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= coarse_solid.nx || j >= coarse_solid.ny || k >= coarse_solid.nz) return;
+
+    bool all_solid = true;
+    for (int dk = 0; dk < 2; ++dk) {
+        for (int dj = 0; dj < 2; ++dj) {
+            for (int di = 0; di < 2; ++di) {
+                all_solid = all_solid && isSolid(fine_solid, 2 * i + di, 2 * j + dj, 2 * k + dk);
+            }
+        }
+    }
+    coarse_solid(i, j, k) = all_solid ? 1.0f : 0.0f;
+}
+
+// Smoke cannot exist inside a solid: clear density and temperature in solid cells.
+__global__ void zeroInSolidKernel(
+    GridView3D<float> density,
+    GridView3D<float> temperature,
+    GridView3D<const float> solid) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= density.nx || j >= density.ny || k >= density.nz) return;
+
+    if (isSolid(solid, i, j, k)) {
+        density(i, j, k) = 0.0f;
+        temperature(i, j, k) = 0.0f;
+    }
 }
 
 void clearDeviceGrid(DeviceGrid3D& grid) {
@@ -611,18 +680,50 @@ struct PoissonNeighbors {
 
 template<class T>
 __device__ PoissonNeighbors gatherNeighbors(
-    GridView3D<T> p, int i, int j, int k, BoundaryWeights weights) {
+    GridView3D<T> p, int i, int j, int k, BoundaryWeights weights, GridView3D<const float> solid) {
     PoissonNeighbors n{0.0f, 0.0f};
-    if (i > 0) { n.sum += p(i - 1, j, k); n.count += 1.0f; }
+    if (i > 0) {
+        if (!isSolid(solid, i-1, j, k)){
+            n.sum += p(i - 1, j, k);
+            n.count += 1.0f;
+        } 
+    }
     else { n.count += weights.side; }
-    if (i < p.nx - 1) { n.sum += p(i + 1, j, k); n.count += 1.0f; }
+    if (i < p.nx - 1) { 
+        if (!isSolid(solid, i+1, j, k)) {
+            n.sum += p(i + 1, j, k); 
+            n.count += 1.0f; 
+        }
+    }
     else { n.count += weights.side; }
-    if (j > 0) { n.sum += p(i, j - 1, k); n.count += 1.0f; }
-    if (j < p.ny - 1) { n.sum += p(i, j + 1, k); n.count += 1.0f; }
+
+    if (j > 0) {
+        if (!isSolid(solid, i, j-1, k)) {
+            n.sum += p(i, j - 1, k); 
+            n.count += 1.0f; 
+        }  
+    } // j == 0: ground is always a solid wall; A Neumann wall adds nothing to sum or count.
+    if (j < p.ny - 1) {
+        if (!isSolid(solid, i, j+1, k)) {
+            n.sum += p(i, j + 1, k); 
+            n.count += 1.0f;
+        }
+    }
     else { n.count += weights.top; }
-    if (k > 0) { n.sum += p(i, j, k - 1); n.count += 1.0f; }
+
+    if (k > 0) { 
+        if (!isSolid(solid, i, j, k-1)) {
+            n.sum += p(i, j, k - 1); 
+            n.count += 1.0f; 
+        } 
+    }
     else { n.count += weights.side; }
-    if (k < p.nz - 1) { n.sum += p(i, j, k + 1); n.count += 1.0f; }
+    if (k < p.nz - 1) {
+        if (!isSolid(solid, i, j, k+1)) {
+            n.sum += p(i, j, k + 1); 
+            n.count += 1.0f; 
+        }
+    }
     else { n.count += weights.side; }
     return n;
 }
@@ -634,7 +735,8 @@ __global__ void redBlackSorKernel(
     float rhs_scale,
     float omega,
     int parity,
-    BoundaryWeights weights) {
+    BoundaryWeights weights,
+    GridView3D<const float> solid) {
     const int half_i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
@@ -643,7 +745,16 @@ __global__ void redBlackSorKernel(
         return;
     }
 
-    const PoissonNeighbors n = gatherNeighbors(pressure, i, j, k, weights);
+    if (isSolid(solid, i, j, k)) {
+        pressure(i, j, k) = 0.0f;
+        return;
+    }
+
+    const PoissonNeighbors n = gatherNeighbors(pressure, i, j, k, weights, solid);
+    if (n.count == 0) {
+        pressure(i, j, k) = 0.0f;
+        return;
+    }
     const float gauss_seidel = (n.sum - rhs_scale * rhs(i, j, k)) / n.count;
     const float current = pressure(i, j, k);
     pressure(i, j, k) = current + omega * (gauss_seidel - current);
@@ -655,7 +766,8 @@ __global__ void residualKernel(
     GridView3D<const float> pressure,
     GridView3D<const float> rhs,
     float rhs_scale,
-    BoundaryWeights weights) {
+    BoundaryWeights weights,
+    GridView3D<const float> solid) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int j = blockIdx.y * blockDim.y + threadIdx.y;
     const int k = blockIdx.z * blockDim.z + threadIdx.z;
@@ -663,7 +775,16 @@ __global__ void residualKernel(
         return;
     }
 
-    const PoissonNeighbors n = gatherNeighbors(pressure, i, j, k, weights);
+    if (isSolid(solid, i, j, k)) {
+        residual(i, j, k) = 0.0f;
+        return;
+    }
+
+    const PoissonNeighbors n = gatherNeighbors(pressure, i, j, k, weights, solid);
+    if (n.count == 0) {
+        residual(i, j, k) = 0.0f;
+        return;
+    }
     residual(i, j, k) = rhs_scale * rhs(i, j, k) - (n.sum - n.count * pressure(i, j, k));
 }
 
@@ -715,6 +836,7 @@ struct PoissonLevel {
     GridView3D<const float> rhs;
     GridView3D<float> rhs_storage;  // Written by restriction; empty on the finest level
     GridView3D<float> residual;
+    GridView3D<const float> solid;
     float rhs_scale;
     BoundaryWeights weights;
 };
@@ -726,7 +848,7 @@ void smooth(const PoissonLevel& level, int iterations, float omega) {
     for (int iter = 0; iter < iterations; ++iter) {
         for (int parity = 0; parity < 2; ++parity) {
             redBlackSorKernel<<<blocks, threads>>>(
-                p, level.rhs, level.rhs_scale, omega, parity, level.weights);
+                p, level.rhs, level.rhs_scale, omega, parity, level.weights, level.solid);
             CUDA_CHECK(cudaGetLastError());
         }
     }
@@ -748,7 +870,7 @@ void vCycle(const std::vector<PoissonLevel>& levels, size_t index) {
     const GridView3D<float>& p = level.pressure;
     residualKernel<<<blocksFor(p.nx, p.ny, p.nz, threads), threads>>>(
         level.residual, GridView3D<const float>(p.data, p.nx, p.ny, p.nz),
-        level.rhs, level.rhs_scale, level.weights);
+        level.rhs, level.rhs_scale, level.weights, level.solid);
     CUDA_CHECK(cudaGetLastError());
 
     const PoissonLevel& coarse = levels[index + 1];
@@ -771,6 +893,7 @@ template<int Component>
 __global__ void pressureGradientKernel(
     GridView3D<float> velocity,
     GridView3D<const float> pressure,
+    GridView3D<const float> solid,
     float inv_rho,
     float inv_h,
     float dt,
@@ -787,11 +910,13 @@ __global__ void pressureGradientKernel(
     float pressure_difference;
     if constexpr (Component == 0) {
         if ((i == 0 || i >= pressure.nx) && !open_sides) return;
+        if (isSolid(solid, i - 1, j, k) || isSolid(solid, i, j, k)) return;
         const float upper = i < pressure.nx ? pressure(i, j, k) : 0.0f;
         const float lower = i > 0 ? pressure(i - 1, j, k) : 0.0f;
         pressure_difference = upper - lower;
     } else if constexpr (Component == 1) {
         if (j == 0) return;
+        if (isSolid(solid, i, j - 1, k) || isSolid(solid, i, j, k)) return;
         if (j >= pressure.ny) {
             if (!open_top) return;
             pressure_difference = -pressure(i, j - 1, k);
@@ -800,6 +925,7 @@ __global__ void pressureGradientKernel(
         }
     } else {
         if ((k == 0 || k >= pressure.nz) && !open_sides) return;
+        if (isSolid(solid, i, j, k - 1) || isSolid(solid, i, j, k)) return;
         const float upper = k < pressure.nz ? pressure(i, j, k) : 0.0f;
         const float lower = k > 0 ? pressure(i, j, k - 1) : 0.0f;
         pressure_difference = upper - lower;
@@ -812,10 +938,11 @@ template<int Component>
 void launchPressureGradientKernel(
     GridView3D<float> velocity,
     GridView3D<const float> pressure,
+    GridView3D<const float> solid,
     float inv_rho, float inv_h, float dt, int open_top, int open_sides) {
     const dim3 threads(8, 8, 4);
     pressureGradientKernel<Component><<<blocksFor(velocity.nx, velocity.ny, velocity.nz, threads), threads>>>(
-        velocity, pressure, inv_rho, inv_h, dt, open_top, open_sides);
+        velocity, pressure, solid, inv_rho, inv_h, dt, open_top, open_sides);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -911,6 +1038,7 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
       temperature_scratch_(nx, ny, nz),
       divergence_(nx, ny, nz),
       residual_(nx, ny, nz),
+      solid_(nx, ny, nz),
       vorticity_(checkedElementCount(nx, ny, nz)),
       cell_force_(checkedElementCount(nx, ny, nz)),
       diagnostic_reductions_(kDiagnosticSlotCount) {
@@ -926,7 +1054,14 @@ CudaFluidSolver::CudaFluidSolver(int nx, int ny, int nz, float h, float rho)
         coarse_levels_.push_back(MultigridLevel{
             DeviceGrid3D(level_nx, level_ny, level_nz),
             DeviceGrid3D(level_nx, level_ny, level_nz),
+            DeviceGrid3D(level_nx, level_ny, level_nz),
             DeviceGrid3D(level_nx, level_ny, level_nz)});
+    }
+
+    // cudaMalloc does not zero memory. The masks are cleared here so that resetting the fluid state keeps the solids in place.
+    clearDeviceGrid(solid_);
+    for (MultigridLevel& level : coarse_levels_) {
+        clearDeviceGrid(level.solid);
     }
 
     emitters_.push_back(SmokeEmitter{});
@@ -1081,6 +1216,7 @@ void CudaFluidSolver::addForces(float dt) {
 void CudaFluidSolver::enforceBoundaryVelocity() {
     constexpr int tile = 16;
     const dim3 threads(tile, tile);
+    const dim3 t3(8, 8, 4);
 
     const GridView3D<float> u = macgrid_.u().view();
     if (!params_.openSides) {
@@ -1090,12 +1226,16 @@ void CudaFluidSolver::enforceBoundaryVelocity() {
         zeroUBoundaryKernel<<<u_blocks, threads>>>(u, macgrid_.nx());
         CUDA_CHECK(cudaGetLastError());
     }
+    solidUKernel<<<blocksFor(u.nx, u.ny, u.nz, t3), t3>>>(u, constView(solid_));
+    CUDA_CHECK(cudaGetLastError());
 
     const GridView3D<float> v = macgrid_.v().view();
     const dim3 v_blocks(
         (v.nx + tile - 1) / tile,
         (v.nz + tile - 1) / tile);
     zeroVBoundaryKernel<<<v_blocks, threads>>>(v, macgrid_.ny(), params_.openTop ? 1 : 0);
+    CUDA_CHECK(cudaGetLastError());
+    solidVKernel<<<blocksFor(v.nx, v.ny, v.nz, t3), t3>>>(v, constView(solid_));
     CUDA_CHECK(cudaGetLastError());
 
     const GridView3D<float> w = macgrid_.w().view();
@@ -1106,6 +1246,8 @@ void CudaFluidSolver::enforceBoundaryVelocity() {
         zeroWBoundaryKernel<<<w_blocks, threads>>>(w, macgrid_.nz());
         CUDA_CHECK(cudaGetLastError());
     }
+    solidWKernel<<<blocksFor(w.nx, w.ny, w.nz, t3), t3>>>(w, constView(solid_));
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void CudaFluidSolver::computeDivergence() {
@@ -1125,14 +1267,13 @@ void CudaFluidSolver::solvePressure(float dt, int cycles) {
     const float h = macgrid_.spacing();
     std::vector<PoissonLevel> levels;
     levels.push_back(PoissonLevel{
-        macgrid_.pressure().view(), constView(divergence_), GridView3D<float>(),
-        residual_.view(), h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f)});
+        macgrid_.pressure().view(), constView(divergence_), GridView3D<float>(), residual_.view(), constView(solid_), h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f)});
     float ratio = 1.0f;
     for (MultigridLevel& level : coarse_levels_) {
         ratio *= 2.0f;
         levels.push_back(PoissonLevel{
             level.pressure.view(), constView(level.rhs), level.rhs.view(),
-            level.residual.view(), 4.0f, boundaryWeights(params_, ratio)});
+            level.residual.view(), constView(level.solid), 4.0f, boundaryWeights(params_, ratio)});
     }
 
     for (int cycle = 0; cycle < cycles; ++cycle) {
@@ -1148,11 +1289,11 @@ void CudaFluidSolver::applyPressureGradient(float dt) {
     const int open_sides = params_.openSides ? 1 : 0;
 
     launchPressureGradientKernel<0>(
-        macgrid_.u().view(), pressure, inv_rho, inv_h, dt, open_top, open_sides);
+        macgrid_.u().view(), pressure, constView(solid_), inv_rho, inv_h, dt, open_top, open_sides);
     launchPressureGradientKernel<1>(
-        macgrid_.v().view(), pressure, inv_rho, inv_h, dt, open_top, open_sides);
+        macgrid_.v().view(), pressure, constView(solid_), inv_rho, inv_h, dt, open_top, open_sides);
     launchPressureGradientKernel<2>(
-        macgrid_.w().view(), pressure, inv_rho, inv_h, dt, open_top, open_sides);
+        macgrid_.w().view(), pressure, constView(solid_), inv_rho, inv_h, dt, open_top, open_sides);
 }
 
 // Advects smoke density and temperature together; both live at cell centers.
@@ -1165,6 +1306,15 @@ void CudaFluidSolver::advectDensity(float dt) {
     const float density_decay = std::exp(-params_.densityDissipation * dt);
     const float temperature_decay = std::exp(-params_.temperatureCooling * dt);
 
+    // Run after the swaps below, once density_ / temperature_ hold the advected result.
+    const auto zeroInSolids = [this]() {
+        const dim3 threads(8, 8, 4);
+        const GridView3D<float> d = density_.view();
+        zeroInSolidKernel<<<blocksFor(d.nx, d.ny, d.nz, threads), threads>>>(
+            d, temperature_.view(), constView(solid_));
+        CUDA_CHECK(cudaGetLastError());
+    };
+
     if (!params_.maccormackScalars) {
         launchAdvect<2>({
             {constView(density_), constView(temperature_)},
@@ -1172,6 +1322,7 @@ void CudaFluidSolver::advectDensity(float dt) {
             {density_decay, temperature_decay}}, u, v, w, offset, h, dt);
         std::swap(density_, density_next_);
         std::swap(temperature_, temperature_next_);
+        zeroInSolids();
         return;
     }
 
@@ -1190,6 +1341,7 @@ void CudaFluidSolver::advectDensity(float dt) {
         {density_decay, temperature_decay}}, u, v, w, offset, h, dt);
     std::swap(density_, density_scratch_);
     std::swap(temperature_, temperature_scratch_);
+    zeroInSolids();
 }
 
 void CudaFluidSolver::step(float dt) {
@@ -1211,6 +1363,40 @@ void CudaFluidSolver::step(float dt) {
     }
 }
 
+#pragma region Solids
+
+void CudaFluidSolver::setSphereSolid(float3 center, float radius) {
+    SphereSDF s{center, radius};
+    Grid3D mask(nx(), ny(), nz(), spacing());
+    const float h = spacing();
+    for (int k = 0; k < nz(); ++k) {
+        for (int j = 0; j < ny(); ++j) {
+            for (int i = 0; i < nx(); ++i) {
+                float3 p = make_float3((i+0.5f)*h, (j+0.5f)*h, (k+0.5f)*h);
+                mask(i, j, k) = s.phi(p) < 0.0f ? 1.0f : 0.0f;
+            }
+        }
+    }
+    solid_.upload(mask);
+    rebuildCoarseSolids();
+}
+
+// Level 0 of the hierarchy is solid_; each coarser mask is restricted from the one above it.
+void CudaFluidSolver::rebuildCoarseSolids() {
+    const dim3 threads(8, 8, 4);
+    DeviceGrid3D* fine = &solid_;
+    for (MultigridLevel& level : coarse_levels_) {
+        const GridView3D<float> coarse = level.solid.view();
+        restrictSolidKernel<<<blocksFor(coarse.nx, coarse.ny, coarse.nz, threads), threads>>>(
+            coarse, constView(*fine));
+        CUDA_CHECK(cudaGetLastError());
+        fine = &level.solid;
+    }
+}
+
+#pragma endregion
+
+#pragma region Diagnostics
 // Runs after the step: pressure and the pre-projection divergence are still those of the
 // solve, and advecting the scalars does not change velocity. residual_ is only scratch
 // inside the V-cycle, so it holds the residual and then the post-projection divergence.
@@ -1226,7 +1412,7 @@ void CudaFluidSolver::computeDiagnostics(float dt) {
 
     residualKernel<<<blocks, threads>>>(
         scratch, constView(macgrid_.pressure()), constView(divergence_),
-        h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f));
+        h * h * macgrid_.rho() / dt, boundaryWeights(params_, 1.0f), constView(solid_));
     CUDA_CHECK(cudaGetLastError());
     launchReduce(constView(residual_), slots + kResidual);
 
@@ -1292,3 +1478,4 @@ bool CudaFluidSolver::fetchDiagnostics(SolverDiagnostics& out) {
     out.maxTemperature = maxAbs(kTemperature);
     return true;
 }
+#pragma endregion

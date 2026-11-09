@@ -81,6 +81,7 @@ private:
     DeviceGrid3D temperature_scratch_;
     DeviceGrid3D divergence_;
     DeviceGrid3D residual_;
+    DeviceGrid3D solid_;
     DeviceBuffer<float4> vorticity_;
     DeviceBuffer<float4> cell_force_;
 
@@ -88,8 +89,11 @@ private:
         DeviceGrid3D pressure;
         DeviceGrid3D rhs;
         DeviceGrid3D residual;
+        DeviceGrid3D solid;  // Restricted from the finest solid mask (see rebuildCoarseSolids)
     };
     std::vector<MultigridLevel> coarse_levels_;
+
+    void rebuildCoarseSolids();
 
     DeviceBuffer<DiagnosticReduction> diagnostic_reductions_;
     bool diagnostics_requested_ = false;
@@ -138,6 +142,8 @@ public:
     void advectDensity(float dt);
 
     void step(float dt);
+
+    void setSphereSolid(float3 center, float radius);
 
     // The next step also computes SolverDiagnostics. fetchDiagnostics reads them back
     // (blocking until that step has finished) and returns false if none are pending.
