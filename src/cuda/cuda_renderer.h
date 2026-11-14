@@ -67,7 +67,7 @@ private:
 
     VolumeTexture density_;
     VolumeTexture temperature_;
-    VolumeTexture lightDepth_;     // float2: optical depth toward the sun, and toward the sky
+    VolumeTexture lightDepth_;     // float4: smoke optical depth toward the sun and the sky, then solid visibility toward the sun and the sky
     VolumeTexture sdf_;            // Signed distance to the solid, clamped at the domain edge
     DeviceBuffer<float> skyDepth_;
     LightingSettings lighting_;

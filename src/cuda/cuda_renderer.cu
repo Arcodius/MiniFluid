@@ -40,9 +40,6 @@ struct RenderParams {
 };
 
 constexpr float kPi = 3.14159265358979f;
-// Stand-in optical depth for "blocked by a solid": exp(-30) is effectively zero light.
-// It is finite on purpose, because the light volume is linearly filtered and inf * 0 is NaN.
-constexpr float kOpaqueDepth = 30.0f;
 
 __host__ __device__ float3 add(float3 a, float3 b) {
     return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
@@ -178,6 +175,38 @@ __device__ bool traceSolid(
     return false;
 }
 
+// How much light reaches origin past the solid along direction, in [0, 1].
+// A binary hit test sampled at voxel centers turns the smooth shadow cylinder into a staircase
+// of voxels. Instead, the ray keeps marching through the solid to find the signed minimum
+// distance to the surface along it, and a ramp one cell wide maps that to visibility. The
+// result is continuous across the silhouette, so the filtered light volume places the shadow
+// edge between voxel centers instead of snapping it to them.
+__device__ float solidVisibility(
+    cudaTextureObject_t sdf, float3 origin, float3 direction, const RenderParams& params) {
+    float entry;
+    float exit;
+    if (!intersectVolume(origin, direction, params.bounds, entry, exit)) {
+        return 1.0f;
+    }
+
+    const float invCellSize = 1.0f / params.cellSize;
+    const float halfWidth = 0.5f * params.cellSize;
+    // Grazing rays creep along the surface; a minimum step keeps them moving.
+    const float minStep = 0.1f * params.cellSize;
+    float minDistance = FLT_MAX;
+    float t = entry;
+    for (int step = 0; step < 256 && t < exit; ++step) {
+        const float d = sampleSdf(sdf, add(origin, multiply(direction, t)), invCellSize);
+        minDistance = fminf(minDistance, d);
+        if (minDistance <= -halfWidth) {
+            return 0.0f;  // Deep enough inside that the ramp is already at zero
+        }
+        // Outside, d is a safe step; inside, |d| moves toward the deepest point.
+        t += fmaxf(0.9f * fabsf(d), minStep);
+    }
+    return saturate(0.5f + minDistance * invCellSize);
+}
+
 // The surface normal is the normalized gradient of the distance field (central differences).
 __device__ float3 sdfNormal(cudaTextureObject_t sdf, float3 p, const RenderParams& params) {
     const float invCellSize = 1.0f / params.cellSize;
@@ -196,9 +225,9 @@ __device__ float3 sdfNormal(cudaTextureObject_t sdf, float3 p, const RenderParam
 // Light volume
 // ---------------------------------------------------------------------------
 
-// Optical depth from each cell straight up to the top of the domain: a cheap sky-occlusion term.
+// Smoke optical depth from each cell straight up to the top of the domain: a cheap sky-occlusion term. The solid's share is computed separately as a visibility in lightDepthKernel.
 __global__ void skyDepthKernel(
-    GridView3D<const float> density, GridView3D<const float> sdf, float* skyDepth, float extinctionTimesCell) {
+    GridView3D<const float> density, float* skyDepth, float extinctionTimesCell) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     const int k = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= density.nx || k >= density.nz) {
@@ -209,10 +238,6 @@ __global__ void skyDepthKernel(
     for (int j = density.ny - 1; j >= 0; --j) {
         const float value = fmaxf(density(i, j, k), 0.0f) * extinctionTimesCell;
         const size_t index = (static_cast<size_t>(k) * density.ny + j) * density.nx + i;
-        // Walking down the column, entering a solid blocks the sky for it and everything below.
-        if (sdf(i, j, k) < 0.0f) {
-            accumulated = kOpaqueDepth;
-        }
         skyDepth[index] = accumulated + 0.5f * value;
         accumulated += value;
     }
@@ -238,13 +263,14 @@ __global__ void lightDepthKernel(
         (i + 0.5f) * params.cellSize,
         (j + 0.5f) * params.cellSize,
         (k + 0.5f) * params.cellSize);
-    // Trace from the cell toward the sun: if the solid is in the way, the cell is in shadow.
-    float blockedAt;
-    const float tau = traceSolid(sdf, p, params.lightDirection, FLT_MAX, params, blockedAt)
-        ? kOpaqueDepth
-        : opticalDepthToLight(density, p, params, 1.0f);
+    // Smoke and solid are stored separately: the solid as a visibility in [0, 1], because linearly filtering a huge "opaque" optical depth would make exp(-tau) collapse to zero as soon as any neighboring voxel is blocked, which hardens the edge into voxel steps.
+    const float sunVisibility = solidVisibility(sdf, p, params.lightDirection, params);
+    const float skyVisibility = solidVisibility(sdf, p, make_float3(0.0f, 1.0f, 0.0f), params);
+    // Computed even when fully shadowed, so filtering next to the shadow edge blends real depths.
+    const float tau = opticalDepthToLight(density, p, params, 1.0f);
     const size_t index = (static_cast<size_t>(k) * ny + j) * nx + i;
-    surf3Dwrite(make_float2(tau, skyDepth[index]), lightDepth, i * sizeof(float2), j, k);
+    surf3Dwrite(make_float4(tau, skyDepth[index], sunVisibility, skyVisibility),
+        lightDepth, i * sizeof(float4), j, k);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,17 +305,16 @@ __device__ float3 floorColor(
     const float contrast = expf(-distance * 0.35f);
     const float albedo = 0.34f + (checker ? 0.05f : -0.02f) * contrast;
 
-    float shadow = expf(-opticalDepthToLight(density, p, params, 1.5f));
-    float blockedAt;
-    if (traceSolid(sdf, p, params.lightDirection, FLT_MAX, params, blockedAt)) {
-        shadow = 0.0f;  // The solid casts a shadow onto the floor
-    }
+    // The same soft visibility as the light volume, traced per pixel, so the floor shadow and
+    // the shadow in the smoke have matching edges.
+    const float shadow = expf(-opticalDepthToLight(density, p, params, 1.5f))
+        * solidVisibility(sdf, p, params.lightDirection, params);
     float occlusion = 1.0f;
     if (p.x > 0.0f && p.z > 0.0f && p.x < params.bounds.x && p.z < params.bounds.z) {
         const float invCellSize = 1.0f / params.cellSize;
-        const float2 depth = tex3D<float2>(lightDepth,
+        const float4 depth = tex3D<float4>(lightDepth,
             p.x * invCellSize, 0.5f, p.z * invCellSize);
-        occlusion = expf(-0.35f * depth.y);
+        occlusion = expf(-0.35f * depth.y) * depth.w;
     }
 
     const float sunFactor = fmaxf(params.lightDirection.y, 0.0f) * shadow;
@@ -439,7 +464,7 @@ __global__ void renderKernel(
                 continue;
             }
 
-            const float2 depth = tex3D<float2>(lightDepth,
+            const float4 depth = tex3D<float4>(lightDepth,
                 p.x * invCellSize, p.y * invCellSize, p.z * invCellSize);
             float sun = 0.0f;
             float weight = 1.0f;
@@ -449,7 +474,8 @@ __global__ void renderKernel(
                 weight *= 0.3f;
                 extinctionScale *= 0.5f;
             }
-            const float skyVisibility = expf(-depth.y);
+            sun *= depth.z;  // The solid blocks every octave alike
+            const float skyVisibility = expf(-depth.y) * depth.w;
             const float3 inScattered = multiply(add(
                 multiply(params.sunRadiance, sun),
                 multiply(params.skyRadiance, skyVisibility)),
@@ -580,7 +606,7 @@ CudaRenderer::CudaRenderer(
     : camera_(camera), solver_(solver),
       density_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false),
       temperature_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false),
-      lightDepth_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float2>(), true),
+      lightDepth_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float4>(), true),
       sdf_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false, true),
       skyDepth_(checkedElementCount(solver.nx(), solver.ny(), solver.nz())) {
     setResolution(resolution.first, resolution.second);
@@ -655,7 +681,7 @@ void CudaRenderer::updateVolumes() {
         (density.nx + columnThreads.x - 1) / columnThreads.x,
         (density.nz + columnThreads.y - 1) / columnThreads.y);
     skyDepthKernel<<<columnBlocks, columnThreads>>>(
-        density, sdf, skyDepth_.data(), params.extinction * params.cellSize);
+        density, skyDepth_.data(), params.extinction * params.cellSize);
     CUDA_CHECK(cudaGetLastError());
 
     const dim3 threads(8, 8, 4);

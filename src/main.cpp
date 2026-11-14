@@ -31,7 +31,7 @@ const int WINDOW_WIDTH = 768;
 const int WINDOW_HEIGHT = 768;
 const int RENDER_WIDTH = 768;
 const int RENDER_HEIGHT = 768;
-const int SIM_W = 64;
+const int SIM_W = 128;
 const int SIM_WIDTH = SIM_W;
 const int SIM_HEIGHT = SIM_W * 1.5;
 const int SIM_DEPTH = SIM_W;
@@ -106,7 +106,7 @@ void OnInit() {
     cudaRenderer = new CudaRenderer(solver, *camera, {RENDER_WIDTH, RENDER_HEIGHT});
 
     // World units: the domain spans [0, 1] in x and z (h = 1 / SIM_W), and 1.5 in y.
-    solver.setSphereSolid(make_float3(0.5f, 0.5f, 0.5f), 0.25f);
+    solver.setSphereSolid(make_float3(0.5f, 0.75f, 0.5f), 0.25f);
 }
 
 bool update(float deltaTime) {
