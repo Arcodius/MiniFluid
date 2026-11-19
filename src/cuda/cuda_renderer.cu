@@ -376,8 +376,7 @@ __global__ void renderKernel(
     cudaTextureObject_t sdf,
     RenderParams params,
     RenderCamera camera,
-    int width,
-    int height,
+    int width, int height, int frameIndex,
     float4* hdrPixels) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -402,7 +401,8 @@ __global__ void renderKernel(
         direction = camera.front;
     }
 
-    const float jitter = gradientNoise(static_cast<float>(x), static_cast<float>(y));
+    const float shift = 5.588238f * float(frameIndex % 64);
+    const float jitter = gradientNoise(static_cast<float>(x) + shift, static_cast<float>(y) + shift);
     const float invCellSize = 1.0f / params.cellSize;
     float floorDistance = FLT_MAX;
     if (params.lit && params.floor && direction.y < -1e-6f && origin.y > 0.0f) {
@@ -426,7 +426,7 @@ __global__ void renderKernel(
         // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
         const float surfaceDistance = fminf(floorDistance, solidDistance);
         exit = fminf(exit, surfaceDistance);
-        const float stepSize = params.cellSize * 0.5f;
+        const float stepSize = params.cellSize * 2.0f;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
         float distance = entry + stepSize * jitter;
 
@@ -506,7 +506,7 @@ __global__ void renderKernel(
     hdrPixels[y * width + x] = make_float4(radiance.x, radiance.y, radiance.z, 1.0f);
 }
 
-__global__ void resolveKernel(const float4* hdrPixels, uint8_t* pixels, RenderParams params, int width, int height) {
+__global__ void resolveKernel(const float4* current, float4* history, uint8_t* pixels, RenderParams params, int width, int height, int frameIndex) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -514,8 +514,12 @@ __global__ void resolveKernel(const float4* hdrPixels, uint8_t* pixels, RenderPa
     }
 
     int index = y * width + x;
-    const float4 hdr = hdrPixels[index];
-    const float3 radiance = make_float3(hdr.x, hdr.y, hdr.z);
+    const float4 hdr = current[index];
+    // history[index] = lerp(history[index], hdr, 0.05f); // About 20 frames
+    int n = 20;
+    history[index] = lerp(history[index], hdr, 1.0f / (n + 1));
+    const float4 historyHdr = history[index];
+    const float3 radiance = make_float3(historyHdr.x, historyHdr.y, historyHdr.z);
     const float3 color = params.lit ? toneMap(radiance, params.exposure) : radiance;
     const float dither = (gradientNoise(x + 17.0f, y + 59.0f) - 0.5f) / 255.0f;
     int byte = (y * width + x) * 4;
@@ -527,6 +531,17 @@ __global__ void resolveKernel(const float4* hdrPixels, uint8_t* pixels, RenderPa
 
 float3 toFloat3(const Vector3& value) {
     return make_float3(value.x, value.y, value.z);
+}
+
+__device__ __forceinline__
+float lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+// t: how much the new value b devote to result.
+__device__ __forceinline__
+float4 lerp(float4 a, float4 b, float t) {
+    return make_float4(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t), lerp(a.w, b.w, t));
 }
 
 }
@@ -621,7 +636,8 @@ CudaRenderer::CudaRenderer(
       temperature_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false),
       lightDepth_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float4>(), true),
       sdf_(solver.nx(), solver.ny(), solver.nz(), cudaCreateChannelDesc<float>(), false, true),
-      skyDepth_(checkedElementCount(solver.nx(), solver.ny(), solver.nz())) {
+      skyDepth_(checkedElementCount(solver.nx(), solver.ny(), solver.nz())),
+      frameIndex_(0) {
     setResolution(resolution.first, resolution.second);
 }
 
@@ -639,8 +655,10 @@ void CudaRenderer::setResolution(size_t w, size_t h) {
 
     DeviceBuffer<uint8_t> pixels(w * h * 4);
     DeviceBuffer<float4> hdrPixels(w * h);
+    DeviceBuffer<float4> historyHdrPixels(w * h);
     devicePixels_ = std::move(pixels);
     hdrPixels_ = std::move(hdrPixels);
+    historyHdrPixels_ = std::move(historyHdrPixels);
     width_ = w;
     height_ = h;
 }
@@ -744,14 +762,15 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
         renderKernel<<<blocks, threads>>>(
             density_.texture(), temperature_.texture(), lightDepth_.texture(), sdf_.texture(),
             params, renderCamera,
-            static_cast<int>(width_), static_cast<int>(height_), hdrPixels_.data());
+            static_cast<int>(width_), static_cast<int>(height_), frameIndex_, hdrPixels_.data());
         CUDA_CHECK(cudaGetLastError());
     }
     {
         const GpuScope scope(GpuStage::Resolve);
-        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_));    
+        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), historyHdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_), frameIndex_);
         CUDA_CHECK(cudaGetLastError());
     }
     PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(
         destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost)));
+    frameIndex_++;
 }
