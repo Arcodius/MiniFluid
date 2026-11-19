@@ -378,7 +378,7 @@ __global__ void renderKernel(
     RenderCamera camera,
     int width,
     int height,
-    uint8_t* pixels) {
+    float4* hdrPixels) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -503,13 +503,26 @@ __global__ void renderKernel(
         radiance = add(radiance, multiply(background, transmittance));
     }
 
+    hdrPixels[y * width + x] = make_float4(radiance.x, radiance.y, radiance.z, 1.0f);
+}
+
+__global__ void resolveKernel(const float4* hdrPixels, uint8_t* pixels, RenderParams params, int width, int height) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) {
+        return;
+    }
+
+    int index = y * width + x;
+    const float4 hdr = hdrPixels[index];
+    const float3 radiance = make_float3(hdr.x, hdr.y, hdr.z);
     const float3 color = params.lit ? toneMap(radiance, params.exposure) : radiance;
     const float dither = (gradientNoise(x + 17.0f, y + 59.0f) - 0.5f) / 255.0f;
-    const int pixel = (y * width + x) * 4;
-    pixels[pixel + 0] = static_cast<uint8_t>(saturate(color.x + dither) * 255.0f + 0.5f);
-    pixels[pixel + 1] = static_cast<uint8_t>(saturate(color.y + dither) * 255.0f + 0.5f);
-    pixels[pixel + 2] = static_cast<uint8_t>(saturate(color.z + dither) * 255.0f + 0.5f);
-    pixels[pixel + 3] = 255;
+    int byte = (y * width + x) * 4;
+    pixels[byte + 0] = static_cast<uint8_t>(saturate(color.x + dither) * 255.0f + 0.5f);
+    pixels[byte + 1] = static_cast<uint8_t>(saturate(color.y + dither) * 255.0f + 0.5f);
+    pixels[byte + 2] = static_cast<uint8_t>(saturate(color.z + dither) * 255.0f + 0.5f);
+    pixels[byte + 3] = 255;
 }
 
 float3 toFloat3(const Vector3& value) {
@@ -625,7 +638,9 @@ void CudaRenderer::setResolution(size_t w, size_t h) {
     }
 
     DeviceBuffer<uint8_t> pixels(w * h * 4);
+    DeviceBuffer<float4> hdrPixels(w * h);
     devicePixels_ = std::move(pixels);
+    hdrPixels_ = std::move(hdrPixels);
     width_ = w;
     height_ = h;
 }
@@ -723,12 +738,18 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     const dim3 blocks(
         (static_cast<unsigned int>(width_) + tile - 1) / tile,
         (static_cast<unsigned int>(height_) + tile - 1) / tile);
+    RenderParams params = makeRenderParams(solver_, lighting_);
     {
         const GpuScope scope(GpuStage::RayMarch);
         renderKernel<<<blocks, threads>>>(
             density_.texture(), temperature_.texture(), lightDepth_.texture(), sdf_.texture(),
-            makeRenderParams(solver_, lighting_), renderCamera,
-            static_cast<int>(width_), static_cast<int>(height_), devicePixels_.data());
+            params, renderCamera,
+            static_cast<int>(width_), static_cast<int>(height_), hdrPixels_.data());
+        CUDA_CHECK(cudaGetLastError());
+    }
+    {
+        const GpuScope scope(GpuStage::Resolve);
+        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_));    
         CUDA_CHECK(cudaGetLastError());
     }
     PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(

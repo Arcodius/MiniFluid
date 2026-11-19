@@ -39,6 +39,7 @@ enum class GpuStage {
     Diagnostics,
     Volumes,      // Density / temperature upload and light volume
     RayMarch,
+    Resolve,
     Readback,
     Count
 };

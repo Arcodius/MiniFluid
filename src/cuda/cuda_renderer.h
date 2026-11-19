@@ -64,6 +64,7 @@ private:
     Camera& camera_;
     CudaFluidSolver& solver_;
     DeviceBuffer<uint8_t> devicePixels_;
+    DeviceBuffer<float4> hdrPixels_;
 
     VolumeTexture density_;
     VolumeTexture temperature_;
