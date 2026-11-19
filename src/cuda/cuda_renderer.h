@@ -64,6 +64,8 @@ private:
     Camera& camera_;
     CudaFluidSolver& solver_;
     DeviceBuffer<uint8_t> devicePixels_;
+    DeviceBuffer<float4> hdrPixels_;
+    DeviceBuffer<float4> historyHdrPixels_;
 
     VolumeTexture density_;
     VolumeTexture temperature_;
@@ -71,6 +73,8 @@ private:
     VolumeTexture sdf_;            // Signed distance to the solid, clamped at the domain edge
     DeviceBuffer<float> skyDepth_;
     LightingSettings lighting_;
+
+    int frameIndex_;
 
     void updateVolumes();
 
