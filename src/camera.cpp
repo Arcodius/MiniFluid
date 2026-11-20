@@ -29,14 +29,14 @@ void Camera::updateCameraVectors() {
     }
     up = right.Cross(front);
     up.Normalize();
-    isViewDirty = true;
+    markViewDirty();
 }
 
 void Camera::setPerspective(bool option) {
     const ProjectionType type = option ? PERSPECTIVE : ORTHOGRAPHIC;
     if (projectionType != type) {
         projectionType = type;
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 
@@ -48,7 +48,7 @@ void Camera::setAspect(float aspect) {
     if (this->aspect != aspect) {
         this->aspect = aspect;
         width = aspect;
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 
@@ -59,7 +59,7 @@ void Camera::setFovY(float fovY) {
     if (this->fovY != fovY) {
         this->fovY = fovY;
         tanHalfFovy = std::tan(DirectX::XMConvertToRadians(fovY) * 0.5f);
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 
@@ -69,7 +69,7 @@ void Camera::setNearClip(float nearClip) {
     }
     if (n != nearClip) {
         n = nearClip;
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 
@@ -79,7 +79,7 @@ void Camera::setFarClip(float farClip) {
     }
     if (f != farClip) {
         f = farClip;
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 
@@ -90,7 +90,7 @@ void Camera::setPosition(const Vector3& position) {
     if (this->position != position) {
         this->position = position;
         target = position + front;
-        isViewDirty = true;
+        markViewDirty();
     }
 }
 
@@ -168,7 +168,7 @@ void Camera::reset() {
 
     updateCameraVectors();
     target = position + front;
-    isProjectionDirty = true;
+    markProjectionDirty();
 }
 
 void Camera::processMouseMotion(float dx, float dy) {
@@ -191,14 +191,14 @@ void Camera::moveForward(float amount) {
     const Vector3 offset = front * amount;
     position += offset;
     target += offset;
-    isViewDirty = true;
+    markViewDirty();
 }
 
 void Camera::moveRight(float amount) {
     const Vector3 offset = right * amount;
     position += offset;
     target += offset;
-    isViewDirty = true;
+    markViewDirty();
 }
 
 void Camera::handleScroll(float scrollY, float deltaTime) {
@@ -207,7 +207,7 @@ void Camera::handleScroll(float scrollY, float deltaTime) {
     } else {
         const float newZoom = zoomFactor * std::pow(0.25f, scrollY * deltaTime);
         zoomFactor = std::clamp(newZoom, 0.01f, 100.0f);
-        isProjectionDirty = true;
+        markProjectionDirty();
     }
 }
 

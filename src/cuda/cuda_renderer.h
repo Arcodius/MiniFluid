@@ -76,7 +76,15 @@ private:
 
     int frameIndex_;
 
+    // Temporal accumulation. The history is restarted whenever what it averages changes: the camera, the simulation state, or a lighting setting that affects the HDR radiance.
+    static constexpr int kMaxAccumulatedFrames = 128;
+    int accumulatedFrames_ = 0;  // 0: the history holds nothing usable
+    uint64_t historyCameraVersion_ = 0;
+    uint64_t historySolverVersion_ = 0;
+    LightingSettings historyLighting_;
+
     void updateVolumes();
+    float nextHistoryBlend();  // Weight of the current frame in the history
 
 public:
     explicit CudaRenderer(CudaFluidSolver& solver, Camera& camera, std::pair<size_t, size_t> resolution = {720, 720});

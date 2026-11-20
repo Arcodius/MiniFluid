@@ -3,6 +3,7 @@
 #include "fluid_math.h"
 #include "grid.h"
 
+#include <cstdint>
 #include <vector>
 
 // A spherical smoke emitter. Positions and radii are in world units; velocity in world units per second.
@@ -107,6 +108,7 @@ private:
     SmokeParameters params_;
     std::vector<SmokeEmitter> emitters_;
     float time_ = 0.0f;
+    uint64_t version_ = 0;  // Bumped whenever the fields a renderer reads (density, temperature, solid) change
 public:
     CudaFluidSolver(int nx, int ny, int nz, float h, float rho);
     ~CudaFluidSolver();
@@ -116,6 +118,7 @@ public:
     int nz() const noexcept { return macgrid_.nz(); }
     float spacing() const noexcept { return macgrid_.spacing(); }
     float time() const noexcept { return time_; }
+    uint64_t version() const noexcept { return version_; }
     int multigridLevels() const noexcept { return static_cast<int>(coarse_levels_.size()) + 1; }
     GridView3D<const float> densityView() const noexcept { return density_.view(); }
     GridView3D<const float> temperatureView() const noexcept { return temperature_.view(); }

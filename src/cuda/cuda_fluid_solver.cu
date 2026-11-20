@@ -1091,6 +1091,7 @@ void CudaFluidSolver::reset() {
     clearDeviceBuffer(vorticity_);
     clearDeviceBuffer(cell_force_);
     time_ = 0.0f;
+    ++version_;
 }
 
 void CudaFluidSolver::initDensity() {
@@ -1359,6 +1360,7 @@ void CudaFluidSolver::step(float dt) {
 
     PROFILE_GPU(GpuStage::AdvectScalars, advectDensity(dt));
     time_ += dt;
+    ++version_;
 
     if (diagnostics_requested_) {
         diagnostics_requested_ = false;
@@ -1386,6 +1388,7 @@ void CudaFluidSolver::setSphereSolid(float3 center, float radius) {
     solid_.upload(mask);
     phi_.upload(distance);
     rebuildCoarseSolids();
+    ++version_;
 }
 
 // Level 0 of the hierarchy is solid_; each coarser mask is restricted from the one above it.

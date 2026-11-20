@@ -5,6 +5,7 @@
 #include "profile/profiler.h"
 #include "solids/sdf.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <limits>
@@ -426,7 +427,7 @@ __global__ void renderKernel(
         // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
         const float surfaceDistance = fminf(floorDistance, solidDistance);
         exit = fminf(exit, surfaceDistance);
-        const float stepSize = params.cellSize * 2.0f;
+        const float stepSize = params.cellSize * 10.0f;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
         float distance = entry + stepSize * jitter;
 
@@ -506,23 +507,34 @@ __global__ void renderKernel(
     hdrPixels[y * width + x] = make_float4(radiance.x, radiance.y, radiance.z, 1.0f);
 }
 
-__global__ void resolveKernel(const float4* current, float4* history, uint8_t* pixels, RenderParams params, int width, int height, int frameIndex) {
+__device__ __forceinline__
+float lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+// t: how much the new value b contributes to the result.
+__device__ __forceinline__
+float4 lerp(float4 a, float4 b, float t) {
+    return make_float4(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t), lerp(a.w, b.w, t));
+}
+
+// blend: weight of the current frame. 1 discards the history (first frame after a reset).
+__global__ void resolveKernel(const float4* current, float4* history, uint8_t* pixels, RenderParams params, int width, int height, float blend) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
         return;
     }
 
-    int index = y * width + x;
+    const int index = y * width + x;
     const float4 hdr = current[index];
-    // history[index] = lerp(history[index], hdr, 0.05f); // About 20 frames
-    int n = 20;
-    history[index] = lerp(history[index], hdr, 1.0f / (n + 1));
-    const float4 historyHdr = history[index];
+    // On a reset the history is overwritten, not blended: it may be uninitialized memory, and lerp(NaN, hdr, 1) is still NaN, which would then stick in the history forever.
+    const float4 historyHdr = blend >= 1.0f ? hdr : lerp(history[index], hdr, blend);
+    history[index] = historyHdr;
     const float3 radiance = make_float3(historyHdr.x, historyHdr.y, historyHdr.z);
     const float3 color = params.lit ? toneMap(radiance, params.exposure) : radiance;
     const float dither = (gradientNoise(x + 17.0f, y + 59.0f) - 0.5f) / 255.0f;
-    int byte = (y * width + x) * 4;
+    int byte = index * 4;
     pixels[byte + 0] = static_cast<uint8_t>(saturate(color.x + dither) * 255.0f + 0.5f);
     pixels[byte + 1] = static_cast<uint8_t>(saturate(color.y + dither) * 255.0f + 0.5f);
     pixels[byte + 2] = static_cast<uint8_t>(saturate(color.z + dither) * 255.0f + 0.5f);
@@ -533,15 +545,19 @@ float3 toFloat3(const Vector3& value) {
     return make_float3(value.x, value.y, value.z);
 }
 
-__device__ __forceinline__
-float lerp(float a, float b, float t) {
-    return a + t * (b - a);
+bool differ(float3 a, float3 b) {
+    return a.x != b.x || a.y != b.y || a.z != b.z;
 }
 
-// t: how much the new value b devote to result.
-__device__ __forceinline__
-float4 lerp(float4 a, float4 b, float t) {
-    return make_float4(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t), lerp(a.w, b.w, t));
+// Whether two settings would produce different HDR radiance. Exposure is left out on purpose:
+// it is applied in the resolve, after the accumulation, so changing it needs no new history.
+bool radianceSettingsDiffer(const LightingSettings& a, const LightingSettings& b) {
+    return a.lightAzimuth != b.lightAzimuth || a.lightElevation != b.lightElevation
+        || differ(a.sunColor, b.sunColor) || a.sunIntensity != b.sunIntensity
+        || differ(a.skyColor, b.skyColor) || a.ambientIntensity != b.ambientIntensity
+        || a.extinction != b.extinction || a.albedo != b.albedo || a.phaseG != b.phaseG
+        || a.emissionStrength != b.emissionStrength
+        || a.lit != b.lit || a.emission != b.emission || a.floor != b.floor;
 }
 
 }
@@ -659,6 +675,7 @@ void CudaRenderer::setResolution(size_t w, size_t h) {
     devicePixels_ = std::move(pixels);
     hdrPixels_ = std::move(hdrPixels);
     historyHdrPixels_ = std::move(historyHdrPixels);
+    accumulatedFrames_ = 0;  // The new history buffer is uninitialized
     width_ = w;
     height_ = h;
 }
@@ -728,6 +745,26 @@ void CudaRenderer::updateVolumes() {
     CUDA_CHECK(cudaGetLastError());
 }
 
+float CudaRenderer::nextHistoryBlend() {
+    // Pull-style change detection: each source keeps its own version, and the renderer
+    // remembers the version its history was built from. Nobody has to notify the renderer.
+    const uint64_t cameraVersion = camera_.getVersion();
+    const uint64_t solverVersion = solver_.version();
+    if (cameraVersion != historyCameraVersion_
+        || solverVersion != historySolverVersion_
+        || radianceSettingsDiffer(lighting_, historyLighting_)) {
+        historyCameraVersion_ = cameraVersion;
+        historySolverVersion_ = solverVersion;
+        historyLighting_ = lighting_;
+        accumulatedFrames_ = 0;
+    }
+
+    // A running mean: frame k gets weight 1 / (k + 1), so after n frames every frame counts 1 / n. Capping n turns it into an exponential moving average with alpha = 1 / (cap + 1), which keeps adapting instead of letting new frames fade to nothing.
+    const float blend = 1.0f / static_cast<float>(accumulatedFrames_ + 1);
+    accumulatedFrames_ = std::min(accumulatedFrames_ + 1, kMaxAccumulatedFrames);
+    return blend;
+}
+
 void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     const size_t pixelBytes = width_ * height_ * 4;
     if (destination == nullptr || destinationSize != pixelBytes) {
@@ -767,7 +804,7 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     }
     {
         const GpuScope scope(GpuStage::Resolve);
-        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), historyHdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_), frameIndex_);
+        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), historyHdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_), nextHistoryBlend());
         CUDA_CHECK(cudaGetLastError());
     }
     PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(

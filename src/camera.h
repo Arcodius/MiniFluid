@@ -2,6 +2,8 @@
 
 #include <SimpleMath.h>
 
+#include <cstdint>
+
 using Vector3 = DirectX::SimpleMath::Vector3;
 using Matrix = DirectX::SimpleMath::Matrix;
 
@@ -36,6 +38,11 @@ private:
     Matrix projectionMatrix;
     bool isViewDirty = true;
     bool isProjectionDirty = true;
+    // Bumped on every change to the view or the projection. Unlike the dirty flags, which the matrix getters clear, a version can be watched by any number of readers: each one keeps the last version it saw and compares.
+    uint64_t version = 0;
+
+    void markViewDirty() { isViewDirty = true; ++version; }
+    void markProjectionDirty() { isProjectionDirty = true; ++version; }
 
     float moveSpeed = 2.0f;
     float mouseSensitivity = 0.1f;
@@ -45,14 +52,13 @@ private:
 
     void updateCameraVectors();
 
-public:
     enum ProjectionType {
         PERSPECTIVE,
         ORTHOGRAPHIC
     };
     ProjectionType projectionType;
     
-
+public:
     Camera();
 
     void reset();
@@ -65,6 +71,7 @@ public:
     float getAspect() const { return aspect; }
     float getOrthographicZoom() const { return zoomFactor; }
     bool isPerspective() const { return projectionType == PERSPECTIVE; }
+    uint64_t getVersion() const { return version; }
     float getNearClip() const { return n; }
     float getFarClip() const { return f; }
     Matrix getViewMatrix();
