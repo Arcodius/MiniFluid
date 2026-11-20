@@ -714,16 +714,30 @@ RenderParams makeRenderParams(const CudaFluidSolver& solver, const LightingSetti
 }
 
 void CudaRenderer::updateVolumes() {
+    const uint64_t solverVersion = solver_.version();
     const GridView3D<const float> density = solver_.densityView();
-    const GridView3D<const float> sdf = solver_.sdfView();
-    density_.copyFrom(density);
-    sdf_.copyFrom(sdf);
-    if (lighting_.emission) {
-        temperature_.copyFrom(solver_.temperatureView());
+    if (densityVersion_ != solverVersion) {
+        density_.copyFrom(density);
+        sdf_.copyFrom(solver_.sdfView());
+        densityVersion_ = solverVersion;
     }
+    // Skipped while emission is off, so the version stays old and turning emission back on uploads the current temperature instead of showing the one from when it was turned off.
+    if (lighting_.emission && temperatureVersion_ != solverVersion) {
+        temperature_.copyFrom(solver_.temperatureView());
+        temperatureVersion_ = solverVersion;
+    }
+    // Unlit rendering never reads the light volume. lightVolumeInputs_ is left as it was, so it
+    // still describes what the volume holds, and switching back to lit rebuilds it only if needed.
     if (!lighting_.lit) {
         return;
     }
+
+    const LightVolumeInputs inputs{
+        solverVersion, lighting_.lightAzimuth, lighting_.lightElevation, lighting_.extinction};
+    if (inputs == lightVolumeInputs_) {
+        return;
+    }
+    lightVolumeInputs_ = inputs;
 
     const RenderParams params = makeRenderParams(solver_, lighting_);
     const dim3 columnThreads(16, 16);

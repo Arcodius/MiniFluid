@@ -83,6 +83,24 @@ private:
     uint64_t historySolverVersion_ = 0;
     LightingSettings historyLighting_;
 
+    // What each cached volume was last built from, so updateVolumes only redoes the work whose inputs changed. kNeverBuilt matches no solver version, so the first frame builds everything.
+    static constexpr uint64_t kNeverBuilt = UINT64_MAX;
+    uint64_t densityVersion_ = kNeverBuilt;      // density_ and sdf_
+    uint64_t temperatureVersion_ = kNeverBuilt;  // temperature_, uploaded only while emission is on
+    // The light volume (skyDepth_ and lightDepth_) depends on the smoke and the solid, the sun direction, and the extinction. The other lighting settings are only read per pixel.
+    struct LightVolumeInputs {
+        uint64_t solverVersion = kNeverBuilt;
+        float lightAzimuth = 0.0f;
+        float lightElevation = 0.0f;
+        float extinction = 0.0f;
+
+        bool operator==(const LightVolumeInputs& other) const {
+            return solverVersion == other.solverVersion && lightAzimuth == other.lightAzimuth
+                && lightElevation == other.lightElevation && extinction == other.extinction;
+        }
+    };
+    LightVolumeInputs lightVolumeInputs_;
+
     void updateVolumes();
     float nextHistoryBlend();  // Weight of the current frame in the history
 
