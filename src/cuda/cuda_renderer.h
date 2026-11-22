@@ -57,6 +57,18 @@ struct LightingSettings {
     bool floor = true;
 };
 
+// The camera as the ray generation sees it: a plain copy of the values one frame was rendered with.
+struct RenderCamera {
+    float3 position;
+    float3 front;
+    float3 right;
+    float3 up;
+    float tangentHalfFov;
+    float halfWidth;
+    float halfHeight;
+    int perspective;
+};
+
 class CudaRenderer {
 private:
     size_t width_ = 0;
@@ -65,7 +77,8 @@ private:
     CudaFluidSolver& solver_;
     DeviceBuffer<uint8_t> devicePixels_;
     DeviceBuffer<float4> hdrPixels_;
-    DeviceBuffer<float4> historyHdrPixels_;
+    DeviceBuffer<float4> historyHdrPixels0_;
+    DeviceBuffer<float4> historyHdrPixels1_;
 
     VolumeTexture density_;
     VolumeTexture temperature_;
@@ -78,10 +91,12 @@ private:
 
     // Temporal accumulation. The history is restarted whenever what it averages changes: the camera, the simulation state, or a lighting setting that affects the HDR radiance.
     static constexpr int kMaxAccumulatedFrames = 128;
-    int accumulatedFrames_ = 0;  // 0: the history holds nothing usable
-    uint64_t historyCameraVersion_ = 0;
     uint64_t historySolverVersion_ = 0;
     LightingSettings historyLighting_;
+    // The camera the previous frame was rendered with, for reprojection. A value, not a reference:
+    // it must keep the old state while camera_ moves on. Invalid until a frame has been rendered.
+    RenderCamera previousCamera_{};
+    bool previousCameraValid_ = false;
 
     // What each cached volume was last built from, so updateVolumes only redoes the work whose inputs changed. kNeverBuilt matches no solver version, so the first frame builds everything.
     static constexpr uint64_t kNeverBuilt = UINT64_MAX;
@@ -102,7 +117,7 @@ private:
     LightVolumeInputs lightVolumeInputs_;
 
     void updateVolumes();
-    float nextHistoryBlend();  // Weight of the current frame in the history
+    bool historyNeedsReset();
 
 public:
     explicit CudaRenderer(CudaFluidSolver& solver, Camera& camera, std::pair<size_t, size_t> resolution = {720, 720});

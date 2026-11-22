@@ -13,16 +13,8 @@
 
 namespace {
 
-struct RenderCamera {
-    float3 position;
-    float3 front;
-    float3 right;
-    float3 up;
-    float tangentHalfFov;
-    float halfWidth;
-    float halfHeight;
-    int perspective;
-};
+// Checkpoint C debug view: true replaces the image with the motion vectors computed in the resolve.
+constexpr bool kShowMotionVectors = false;
 
 struct RenderParams {
     float3 bounds;
@@ -46,6 +38,10 @@ __host__ __device__ float3 add(float3 a, float3 b) {
     return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
 }
 
+__host__ __device__ float3 subtract(float3 a, float3 b) {
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
 __host__ __device__ float3 multiply(float3 value, float scale) {
     return make_float3(value.x * scale, value.y * scale, value.z * scale);
 }
@@ -65,6 +61,35 @@ __device__ float3 normalize(float3 value) {
 
 __device__ float saturate(float value) {
     return fminf(fmaxf(value, 0.0f), 1.0f);
+}
+
+__device__ __forceinline__
+float lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+__device__ __forceinline__
+float3 lerp(float3 a, float3 b, float t) {
+    return make_float3(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t));
+}
+
+// t: how much the new value b contributes to the result.
+__device__ __forceinline__
+float4 lerp(float4 a, float4 b, float t) {
+    return make_float4(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t), lerp(a.w, b.w, t));
+}
+
+__device__ float4 sampleBilinear(const float4* frame, float2 coordinate, const int width, const int height) {
+    const int x0 = static_cast<int>(coordinate.x);
+    const int y0 = static_cast<int>(coordinate.y);
+    const int x1 = x0 == width - 1 ? x0 : x0 + 1;
+    const int y1 = y0 == height - 1 ? y0 : y0 + 1;
+
+    return lerp(
+        lerp(frame[y0 * width + x0], frame[y1 * width + x0], coordinate.y - y0),
+        lerp(frame[y0 * width + x1], frame[y1 * width + x1], coordinate.y - y0),
+        coordinate.x - x0
+    );
 }
 
 __device__ bool intersectVolume(
@@ -370,6 +395,46 @@ __device__ float3 toneMap(float3 color, float exposure) {
     return make_float3(mapped[0], mapped[1], mapped[2]);
 }
 
+__device__ void generateRay(const int x, const int y, const int width, const int height, RenderCamera camera, float3& origin, float3& direction) {
+    const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / width - 1.0f;
+    const float ndcY = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / height;
+    origin = camera.position;
+    if (camera.perspective) {
+        const float aspect = static_cast<float>(width) / height;
+        direction = normalize(add(
+            add(camera.front,
+                multiply(camera.right, ndcX * aspect * camera.tangentHalfFov)),
+            multiply(camera.up, ndcY * camera.tangentHalfFov)));
+    } else {
+        origin = add(origin, add(
+            multiply(camera.right, ndcX * camera.halfWidth),
+            multiply(camera.up, ndcY * camera.halfHeight)));
+        direction = camera.front;
+    }
+}
+
+// The inverse of generateRay: where the point seen along (origin, direction) at 1 / invDepth was in the image of a perspective camera, in the same pixel coordinates as generateRay's x and y: the center of pixel (x, y) comes back as exactly (x, y). Returns false when the point is behind it.
+// The point is P = origin + direction / invDepth. A perspective projection does not change when the vector it projects is scaled, so P - camera.position is multiplied by invDepth first. That keeps the sky (invDepth = 0, a point at infinity) finite: it projects its direction only.
+__device__ bool projectToCamera(
+    float3 origin, float3 direction, float invDepth, RenderCamera camera,
+    int width, int height, float2& pixel) {
+    if (!camera.perspective) {
+        return false;  // Only perspective cameras are reprojected; resolveKernel handles a still orthographic one
+    }
+    const float3 v = add(multiply(subtract(origin, camera.position), invDepth), direction);
+    const float z = dot(v, camera.front);
+    if (z <= 1e-6f) {
+        return false;
+    }
+    const float aspect = static_cast<float>(width) / height;
+    const float ndcX = dot(v, camera.right) / (z * camera.tangentHalfFov * aspect);
+    const float ndcY = dot(v, camera.up) / (z * camera.tangentHalfFov);
+    // generateRay solved for x and y
+    pixel.x = (ndcX + 1.0f) * 0.5f * width - 0.5f;
+    pixel.y = (1.0f - ndcY) * 0.5f * height - 0.5f;
+    return true;
+}
+
 __global__ void renderKernel(
     cudaTextureObject_t density,
     cudaTextureObject_t temperature,
@@ -385,22 +450,9 @@ __global__ void renderKernel(
         return;
     }
 
-    const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / width - 1.0f;
-    const float ndcY = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / height;
-    float3 origin = camera.position;
     float3 direction;
-    if (camera.perspective) {
-        const float aspect = static_cast<float>(width) / height;
-        direction = normalize(add(
-            add(camera.front,
-                multiply(camera.right, ndcX * aspect * camera.tangentHalfFov)),
-            multiply(camera.up, ndcY * camera.tangentHalfFov)));
-    } else {
-        origin = add(origin, add(
-            multiply(camera.right, ndcX * camera.halfWidth),
-            multiply(camera.up, ndcY * camera.halfHeight)));
-        direction = camera.front;
-    }
+    float3 origin;
+    generateRay(x, y, width, height, camera, origin, direction);
 
     const float shift = 5.588238f * float(frameIndex % 64);
     const float jitter = gradientNoise(static_cast<float>(x) + shift, static_cast<float>(y) + shift);
@@ -423,13 +475,14 @@ __global__ void renderKernel(
             solidDistance = hit;
         }
     }
+    float invDepth = 0.0f;
     if (intersectVolume(origin, direction, params.bounds, entry, exit)) {
         // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
         const float surfaceDistance = fminf(floorDistance, solidDistance);
         exit = fminf(exit, surfaceDistance);
         const float stepSize = params.cellSize * 10.0f;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
-        float distance = entry + stepSize * jitter;
+        float distance = fmaxf(entry + stepSize * jitter, 1e-6f); // to avoid zero distance in division
 
         const float cosTheta = dot(direction, params.lightDirection);
         // Multiple scattering approximation: a sum of octaves with progressively weaker
@@ -460,6 +513,7 @@ __global__ void renderKernel(
             if (!params.lit) {
                 const float alpha = 1.0f - expf(-value * params.extinction * stepSize);
                 const float contribution = transmittance * alpha;
+                invDepth += contribution / distance;
                 radiance = add(radiance, multiply(make_float3(0.92f, 0.96f, 1.0f), contribution));
                 transmittance *= 1.0f - alpha;
                 continue;
@@ -486,6 +540,7 @@ __global__ void renderKernel(
             const float stepTransmittance = expf(-value * params.extinction * stepSize);
             radiance = add(radiance, multiply(
                 add(multiply(inScattered, 1.0f - stepTransmittance), emitted), transmittance));
+            invDepth += transmittance * (1.0f - stepTransmittance) / distance;
             transmittance *= stepTransmittance;
         }
     }
@@ -495,31 +550,24 @@ __global__ void renderKernel(
         if (solidDistance < FLT_MAX) {
             const float3 p = add(origin, multiply(direction, solidDistance));
             background = solidColor(p, direction, solidDistance, density, sdf, params);
+            invDepth += transmittance / solidDistance;
         } else if (floorDistance < FLT_MAX) {
             const float3 p = add(origin, multiply(direction, floorDistance));
             background = floorColor(p, direction, floorDistance, density, lightDepth, sdf, params);
+            invDepth += transmittance / floorDistance;
         } else {
             background = skyColor(direction, params);
         }
         radiance = add(radiance, multiply(background, transmittance));
     }
 
-    hdrPixels[y * width + x] = make_float4(radiance.x, radiance.y, radiance.z, 1.0f);
+    hdrPixels[y * width + x] = make_float4(radiance.x, radiance.y, radiance.z, invDepth);
 }
 
-__device__ __forceinline__
-float lerp(float a, float b, float t) {
-    return a + t * (b - a);
-}
-
-// t: how much the new value b contributes to the result.
-__device__ __forceinline__
-float4 lerp(float4 a, float4 b, float t) {
-    return make_float4(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t), lerp(a.w, b.w, t));
-}
-
-// blend: weight of the current frame. 1 discards the history (first frame after a reset).
-__global__ void resolveKernel(const float4* current, float4* history, uint8_t* pixels, RenderParams params, int width, int height, float blend) {
+// previousCameraValid: false on the first frame, when there is no previous camera to project into.
+// cameraUnchanged: the previous and the current camera are identical. Orthographic cameras are not
+// reprojected, so for them this is the only case in which the history still lines up.
+__global__ void resolveKernel(const float4* current, const float4* previousHistory, float4* currentHistory, uint8_t* pixels, RenderParams params, RenderCamera previousCamera, bool previousCameraValid, bool cameraUnchanged, RenderCamera currentCamera, int width, int height, bool historyReset, const int maxFrames) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -528,11 +576,51 @@ __global__ void resolveKernel(const float4* current, float4* history, uint8_t* p
 
     const int index = y * width + x;
     const float4 hdr = current[index];
+
+    // Where this pixel's content was in the previous frame. hdr.w is the inverse depth, not the depth.
+    float3 origin;
+    float3 direction;
+    generateRay(x, y, width, height, currentCamera, origin, direction);
+    float2 previousPixel = make_float2(0.0f, 0.0f);
+    bool reprojected = false;
+    if (previousCameraValid) {
+        if (previousCamera.perspective) {
+            reprojected = projectToCamera(
+                origin, direction, hdr.w, previousCamera, width, height, previousPixel);
+        } else if (cameraUnchanged) {
+            // A still orthographic camera: every pixel sees what it saw last frame.
+            previousPixel = make_float2(static_cast<float>(x), static_cast<float>(y));
+            reprojected = true;
+        }
+    }
+    const bool onScreen = reprojected
+        && previousPixel.x >= 0.0f && previousPixel.x <= width - 1.0f
+        && previousPixel.y >= 0.0f && previousPixel.y <= height - 1.0f;
+    const bool usable = !historyReset && onScreen;
+
+    if (kShowMotionVectors) {
+        // Checkpoint C: red = horizontal motion, green = vertical, scaled so 1/16 pixel is visible.
+        // A still camera must be black everywhere. Blue: no usable history position.
+        const float motionScale = 2.0f;
+        const int byte = index * 4;
+        const float red = onScreen ? saturate(fabsf(previousPixel.x - x) * motionScale) : 0.0f;
+        const float green = onScreen ? saturate(fabsf(previousPixel.y - y) * motionScale) : 0.0f;
+        pixels[byte + 0] = static_cast<uint8_t>(red * 255.0f + 0.5f);
+        pixels[byte + 1] = static_cast<uint8_t>(green * 255.0f + 0.5f);
+        pixels[byte + 2] = onScreen ? 0 : 255;
+        pixels[byte + 3] = 255;
+        return;
+    }
+
     // On a reset the history is overwritten, not blended: it may be uninitialized memory, and lerp(NaN, hdr, 1) is still NaN, which would then stick in the history forever.
-    const float4 historyHdr = blend >= 1.0f ? hdr : lerp(history[index], hdr, blend);
-    history[index] = historyHdr;
-    const float3 radiance = make_float3(historyHdr.x, historyHdr.y, historyHdr.z);
-    const float3 color = params.lit ? toneMap(radiance, params.exposure) : radiance;
+    const float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    const float n = usable ? h.w : 0;
+    const float blend = 1.0f / (n + 1);
+    const float3 rgb = usable ? lerp(make_float3(h.x, h.y, h.z), make_float3(hdr.x, hdr.y, hdr.z), blend) : make_float3(hdr.x, hdr.y, hdr.z);
+    const float newN = fminf(n + 1, maxFrames);
+    currentHistory[index] = make_float4(rgb.x, rgb.y, rgb.z, newN);
+    
+    const float3 color = params.lit ? toneMap(rgb, params.exposure) : rgb;
     const float dither = (gradientNoise(x + 17.0f, y + 59.0f) - 0.5f) / 255.0f;
     int byte = index * 4;
     pixels[byte + 0] = static_cast<uint8_t>(saturate(color.x + dither) * 255.0f + 0.5f);
@@ -547,6 +635,14 @@ float3 toFloat3(const Vector3& value) {
 
 bool differ(float3 a, float3 b) {
     return a.x != b.x || a.y != b.y || a.z != b.z;
+}
+
+bool sameCamera(const RenderCamera& a, const RenderCamera& b) {
+    return !differ(a.position, b.position) && !differ(a.front, b.front)
+        && !differ(a.right, b.right) && !differ(a.up, b.up)
+        && a.tangentHalfFov == b.tangentHalfFov
+        && a.halfWidth == b.halfWidth && a.halfHeight == b.halfHeight
+        && a.perspective == b.perspective;
 }
 
 // Whether two settings would produce different HDR radiance. Exposure is left out on purpose:
@@ -671,11 +767,13 @@ void CudaRenderer::setResolution(size_t w, size_t h) {
 
     DeviceBuffer<uint8_t> pixels(w * h * 4);
     DeviceBuffer<float4> hdrPixels(w * h);
-    DeviceBuffer<float4> historyHdrPixels(w * h);
+    DeviceBuffer<float4> historyHdrPixels0(w * h);
+    DeviceBuffer<float4> historyHdrPixels1(w * h);
     devicePixels_ = std::move(pixels);
     hdrPixels_ = std::move(hdrPixels);
-    historyHdrPixels_ = std::move(historyHdrPixels);
-    accumulatedFrames_ = 0;  // The new history buffer is uninitialized
+    historyHdrPixels0_ = std::move(historyHdrPixels0);
+    historyHdrPixels1_ = std::move(historyHdrPixels1);
+    previousCameraValid_ = false;  // The previous frame had another size, so its pixels do not line up
     width_ = w;
     height_ = h;
 }
@@ -759,24 +857,18 @@ void CudaRenderer::updateVolumes() {
     CUDA_CHECK(cudaGetLastError());
 }
 
-float CudaRenderer::nextHistoryBlend() {
+// Check and update parameters
+bool CudaRenderer::historyNeedsReset() {
     // Pull-style change detection: each source keeps its own version, and the renderer
     // remembers the version its history was built from. Nobody has to notify the renderer.
-    const uint64_t cameraVersion = camera_.getVersion();
     const uint64_t solverVersion = solver_.version();
-    if (cameraVersion != historyCameraVersion_
-        || solverVersion != historySolverVersion_
+    if (solverVersion != historySolverVersion_
         || radianceSettingsDiffer(lighting_, historyLighting_)) {
-        historyCameraVersion_ = cameraVersion;
         historySolverVersion_ = solverVersion;
         historyLighting_ = lighting_;
-        accumulatedFrames_ = 0;
+        return true;
     }
-
-    // A running mean: frame k gets weight 1 / (k + 1), so after n frames every frame counts 1 / n. Capping n turns it into an exponential moving average with alpha = 1 / (cap + 1), which keeps adapting instead of letting new frames fade to nothing.
-    const float blend = 1.0f / static_cast<float>(accumulatedFrames_ + 1);
-    accumulatedFrames_ = std::min(accumulatedFrames_ + 1, kMaxAccumulatedFrames);
-    return blend;
+    return false;
 }
 
 void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
@@ -818,10 +910,15 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     }
     {
         const GpuScope scope(GpuStage::Resolve);
-        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), historyHdrPixels_.data(), devicePixels_.data(), params, static_cast<int>(width_), static_cast<int>(height_), nextHistoryBlend());
+        resolveKernel<<<blocks, threads>>>(hdrPixels_.data(), historyHdrPixels0_.data(),  historyHdrPixels1_.data(),devicePixels_.data(), params,
+            previousCamera_, previousCameraValid_, sameCamera(previousCamera_, renderCamera), renderCamera,
+            static_cast<int>(width_), static_cast<int>(height_), historyNeedsReset(), kMaxAccumulatedFrames);
         CUDA_CHECK(cudaGetLastError());
     }
+    std::swap(historyHdrPixels0_, historyHdrPixels1_);
     PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(
         destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost)));
+    previousCamera_ = renderCamera;
+    previousCameraValid_ = true;
     frameIndex_++;
 }
