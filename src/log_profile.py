@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 # ---------------------------------------------------------------- 配置 ----
 LOG_PATH = 'profile.csv'
 OUTPUT_DIR = 'profile_charts'
-WARMUP_RATIO = 0.25  # 丢弃开头的预热比例（首次 kernel 加载会有数百毫秒的尖峰）
+WARMUP_RATIO = 0.0  # 丢弃开头的预热比例（首次 kernel 加载会有数百毫秒的尖峰）
 
 # 主曲线：显示名 -> 列名
 MAIN_COLUMNS = {
@@ -30,7 +30,7 @@ DIAGNOSTIC_COLUMNS = {
     'kinetic energy': ('kinetic_energy', False),
 }
 # 每帧执行一次的渲染阶段；其余 gpu_ 列属于模拟 step，可按步数折算
-RENDER_STAGES = ('gpu_volumes_ms', 'gpu_ray_march_ms', 'gpu_readback_ms')
+RENDER_STAGES = ('gpu_volumes_ms', 'gpu_ray_march_ms', 'gpu_resolve_ms', 'gpu_readback_ms')
 
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -49,7 +49,11 @@ def read_profile(path):
     elif line.strip():
       data_lines.append(line)
   rows = []
-  for raw in csv.DictReader(data_lines):
+  reader = csv.DictReader(data_lines)
+  for raw in reader:
+    if None in raw or None in raw.values():
+      raise SystemExit(f'{path}: line {reader.line_num} has a different number of fields than '
+                       f'the header ({len(reader.fieldnames)} columns); the CSV is malformed')
     rows.append({k: (float(v) if v != '' else None) for k, v in raw.items()})
   return metadata, rows[int(len(rows) * WARMUP_RATIO):]
 
@@ -76,6 +80,9 @@ def print_summary(metadata, rows):
   p99 = sorted(frame_ms)[min(len(frame_ms) - 1, len(frame_ms) * 99 // 100)]
   print(f'\nframes {len(rows)}, {seconds:.2f} s, FPS {len(rows) / seconds:.1f}, '
         f'1% low {1000.0 / p99:.1f}, steps {int(steps)}')
+  paused = sum(1 for r in rows if r.get('paused'))
+  if paused:
+    print(f'paused frames {paused} / {len(rows)} (paused frames have no simulation timings or diagnostics)')
 
   print(f"\n{'Stage':<24} | {'Avg/frame (ms)':<14} | {'Max (ms)':<10} | Avg/step (ms)")
   print('-' * 72)

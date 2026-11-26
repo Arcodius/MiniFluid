@@ -65,6 +65,9 @@ struct FrameRecord {
     double time = 0.0;        // Seconds since the profiler was created, at the end of the frame
     float frameMs = 0.0f;     // Wall-clock time since the previous recorded frame
     int simSteps = 0;
+    bool paused = false;
+    int simulationFpsLimit = 0;  // 0: unlimited
+    int renderFpsLimit = 0;      // 0: unlimited
     std::array<float, kCpuStageCount> cpuMs{};
     std::array<float, kGpuStageCount> gpuMs{};  // Summed over all simulation steps of the frame
     bool hasDiagnostics = false;
@@ -93,6 +96,9 @@ public:
 
     void beginFrame();
     void endFrame(int simSteps);
+
+    // Run state of the current frame, recorded with it. A limit of 0 means unlimited.
+    void setFrameState(bool paused, int simulationFpsLimit, int renderFpsLimit) noexcept;
 
     // Diagnostics are sampled on one step every `interval` frames; 0 turns them off.
     int diagnosticsInterval() const noexcept { return diagnosticsInterval_; }

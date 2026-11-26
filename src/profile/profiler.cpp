@@ -27,6 +27,7 @@ constexpr std::array<StageInfo, kGpuStageCount> kGpuStages = {{
     {"Diagnostics", "gpu_diagnostics_ms"},
     {"Volumes + light", "gpu_volumes_ms"},
     {"Ray march", "gpu_ray_march_ms"},
+    {"Resolve", "gpu_resolve_ms"},
     {"Readback", "gpu_readback_ms"},
 }};
 
@@ -126,6 +127,15 @@ void FrameProfiler::endFrame(int simSteps) {
     }
 }
 
+void FrameProfiler::setFrameState(bool paused, int simulationFpsLimit, int renderFpsLimit) noexcept {
+    if (!enabled_) {
+        return;
+    }
+    current_.paused = paused;
+    current_.simulationFpsLimit = simulationFpsLimit;
+    current_.renderFpsLimit = renderFpsLimit;
+}
+
 bool FrameProfiler::wantsDiagnostics() const noexcept {
     return enabled_ && diagnosticsInterval_ > 0 && frameIndex_ % diagnosticsInterval_ == 0;
 }
@@ -221,7 +231,16 @@ void FrameProfiler::writeCsvHeader(std::ostream& out) const {
     for (const auto& [key, value] : metadata_) {
         out << "# " << key << ": " << value << '\n';
     }
-    out << "frame,time_s,frame_ms,sim_steps";
+    out << "# diagnostics_interval: " << diagnosticsInterval_ << '\n';
+    size_t memoryFree = 0;
+    size_t memoryTotal = 0;
+    if (cudaMemGetInfo(&memoryFree, &memoryTotal) == cudaSuccess) {
+        constexpr double mib = 1024.0 * 1024.0;
+        out << "# vram_used_mib: " << static_cast<long long>((memoryTotal - memoryFree) / mib) << '\n'
+            << "# vram_total_mib: " << static_cast<long long>(memoryTotal / mib) << '\n';
+    }
+    // Keep in the same order as writeCsvRow.
+    out << "frame,time_s,frame_ms,sim_steps,paused,sim_fps_limit,render_fps_limit";
     for (const StageInfo& stage : kCpuStages) {
         out << ',' << stage.key;
     }
@@ -236,7 +255,8 @@ void FrameProfiler::writeCsvHeader(std::ostream& out) const {
 void FrameProfiler::writeCsvRow(std::ostream& out, const FrameRecord& r) {
     out << r.frame << ',' << std::fixed << std::setprecision(6) << r.time
         << std::defaultfloat << std::setprecision(6)
-        << ',' << r.frameMs << ',' << r.simSteps;
+        << ',' << r.frameMs << ',' << r.simSteps
+        << ',' << (r.paused ? 1 : 0) << ',' << r.simulationFpsLimit << ',' << r.renderFpsLimit;
     for (float ms : r.cpuMs) {
         out << ',' << ms;
     }

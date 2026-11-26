@@ -46,6 +46,11 @@ int gPresetIndex = 0;
 bool SMOOTH_RENDERING = true;
 bool PAUSE = false;
 
+// Simulation steps taken since startup, including the --start-steps pre-roll. With
+// --exit-steps, the interactive loop exits once this reaches gExitSteps (-1: never).
+long long gTotalSteps = 0;
+long long gExitSteps = -1;
+
 Camera* camera;
 CudaRenderer* cudaRenderer;
 bool gMouseLookActive;
@@ -491,6 +496,9 @@ void loop() {
         } else {
             simAccumulator = 0.0;
         }
+        if (gExitSteps >= 0) {
+            stepsDue = static_cast<int>(std::min<long long>(stepsDue, std::max<long long>(gExitSteps - gTotalSteps, 0)));
+        }
         if (stepsDue > 0) {
             const CpuScope simulation(CpuStage::Simulation);
             if (frameSteps == 0 && frameProfiler.wantsDiagnostics()) {
@@ -502,12 +510,15 @@ void loop() {
         }
     }
     frameSteps += steps;
+    gTotalSteps += steps;
     gSimulationRate.add(nowNs, steps);
+    // Render the final state once and close the profiler frame before exiting.
+    const bool exitReached = gExitSteps >= 0 && gTotalSteps >= gExitSteps;
 
     // Render
     const Uint64 renderIntervalNs = 1'000'000'000ull / std::max(gFrameRate.renderFps, 1);
     Uint64 renderCheckNs = SDL_GetTicksNS();
-    if (!gFrameRate.limitRender || renderCheckNs >= nextRenderNs) {
+    if (exitReached || !gFrameRate.limitRender || renderCheckNs >= nextRenderNs) {
         // Keep a steady cadence, but do not try to catch up on frames missed long ago.
         nextRenderNs = (renderCheckNs - nextRenderNs > renderIntervalNs)
             ? renderCheckNs + renderIntervalNs
@@ -523,9 +534,18 @@ void loop() {
         if (solver.fetchDiagnostics(diagnostics)) {
             frameProfiler.setDiagnostics(diagnostics);
         }
+        frameProfiler.setFrameState(PAUSE,
+            gFrameRate.limitSimulation ? gFrameRate.simulationFps : 0,
+            gFrameRate.limitRender ? gFrameRate.renderFps : 0);
         frameProfiler.endFrame(frameSteps);
         frameOpen = false;
         renderCheckNs = SDL_GetTicksNS();
+    }
+
+    if (exitReached) {
+        SDL_Log("Reached %lld simulation steps, exiting", gTotalSteps);
+        gDone = 1;
+        return;
     }
 
     // Sleep only when nothing runs unlimited; otherwise the loop spins as fast as it can.
@@ -585,6 +605,7 @@ static int run(int argc, char** argv) {
     int initialPreset = 0;
     int captureSteps = -1;
     std::string capturePath = "capture.png";
+    long long startSteps = 0;
     bool unlit = false;
     bool emission = false;
 #ifdef PROFILE
@@ -602,6 +623,10 @@ static int run(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 capturePath = argv[++i];
             }
+        } else if (argument == "--start-steps" && i + 1 < argc) {
+            startSteps = std::max(std::atoll(argv[++i]), 0LL);
+        } else if (argument == "--exit-steps" && i + 1 < argc) {
+            gExitSteps = std::max(std::atoll(argv[++i]), 0LL);
         } else if (argument == "--unlit") {
             unlit = true;
         } else if (argument == "--emission") {
@@ -670,6 +695,22 @@ static int run(int argc, char** argv) {
             } else {
                 SDL_Log("Failed to open profile recording %s", profileRecordPath.c_str());
             }
+        }
+
+        // Pre-roll: advance the scene without real-time pacing, then wait paused for the user.
+        if (startSteps > 0) {
+            if (gExitSteps >= 0) {
+                startSteps = std::min(startSteps, gExitSteps);
+            }
+            const Uint64 preRollStart = SDL_GetTicksNS();
+            for (long long step = 0; step < startSteps; ++step) {
+                solver.step(static_cast<float>(SIMULATION_DT));
+            }
+            CUDA_CHECK(cudaDeviceSynchronize());
+            gTotalSteps = startSteps;
+            PAUSE = true;
+            SDL_Log("Pre-simulated %lld steps in %.1f ms, paused",
+                startSteps, (SDL_GetTicksNS() - preRollStart) / 1.0e6);
         }
 
         gDone = 0;

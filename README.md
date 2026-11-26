@@ -117,6 +117,8 @@ If you use a different Visual Studio installation, configure a separate build di
 | `--unlit` | Start with the unlit renderer |
 | `--emission` | Start with temperature emission enabled |
 | `--capture <steps> [file.png]` | Run `<steps>` simulation steps of `1/60` s without real-time pacing, render one frame, save it (default `capture.png`; a `.bmp` path saves BMP), print timings, and exit |
+| `--start-steps <N>` | Simulate `N` steps of `1/60` s right after startup without real-time pacing, then start paused and wait for the user |
+| `--exit-steps <M>` | Exit once `M` simulation steps have run since startup, counting the `--start-steps` pre-roll; the final state is rendered first. Paused time does not count |
 | `--profile` | Open the profiler window at startup |
 | `--profile-record <file.csv>` | Record every frame to a CSV file from startup until exit |
 

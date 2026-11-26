@@ -530,7 +530,7 @@ __global__ void renderKernel(
         // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
         const float surfaceDistance = fminf(floorDistance, solidDistance);
         exit = fminf(exit, surfaceDistance);
-        const float stepSize = params.cellSize * 10.0f;
+        const float stepSize = params.cellSize * 0.5f;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
         float distance = fmaxf(entry + stepSize * jitter, 1e-6f); // to avoid zero distance in division
 
