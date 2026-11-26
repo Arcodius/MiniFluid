@@ -46,6 +46,18 @@ __host__ __device__ float3 multiply(float3 value, float scale) {
     return make_float3(value.x * scale, value.y * scale, value.z * scale);
 }
 
+__host__ __device__ float3 multiply(float3 a, float3 b) {
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+__host__ __device__ float3 squareRoot(float3 value) {
+    return make_float3(sqrtf(value.x), sqrtf(value.y), sqrtf(value.z));
+}
+
+__host__ __device__ float3 getMax(float3 a, float b) {
+    return make_float3(max(a.x, b), max(a.y, b), max(a.z, b));
+}
+
 __device__ float3 mix(float3 a, float3 b, float t) {
     return make_float3(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z));
 }
@@ -61,6 +73,11 @@ __device__ float3 normalize(float3 value) {
 
 __device__ float saturate(float value) {
     return fminf(fmaxf(value, 0.0f), 1.0f);
+}
+
+__device__ __forceinline__ 
+int clamp(int value, int a, int b) {
+    return max(a, min(b, value));
 }
 
 __device__ __forceinline__
@@ -89,6 +106,25 @@ __device__ float4 sampleBilinear(const float4* frame, float2 coordinate, const i
         lerp(frame[y0 * width + x0], frame[y1 * width + x0], coordinate.y - y0),
         lerp(frame[y0 * width + x1], frame[y1 * width + x1], coordinate.y - y0),
         coordinate.x - x0
+    );
+}
+
+__device__ float3 rgbToYCoCg(const float3 rgb) {
+    float r4 = rgb.x / 4;
+    float g2 = rgb.y / 2;
+    float b4 = rgb.z / 4;
+    return make_float3(
+        r4 + g2 + b4,
+        r4*2 - b4*2,
+        -r4 + g2 - b4
+    );
+}
+
+__device__ float3 yCoCgToRgb(const float3 yCoCg) {
+    return make_float3(
+        yCoCg.x + yCoCg.y - yCoCg.z,
+        yCoCg.x + yCoCg.z,
+        yCoCg.x - yCoCg.y - yCoCg.z
     );
 }
 
@@ -613,8 +649,51 @@ __global__ void resolveKernel(const float4* current, const float4* previousHisto
     }
 
     // On a reset the history is overwritten, not blended: it may be uninitialized memory, and lerp(NaN, hdr, 1) is still NaN, which would then stick in the history forever.
-    const float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     const float n = usable ? h.w : 0;
+
+    // neighbour domain
+    if (usable) {
+        float3 mu = make_float3(0.0f, 0.0f, 0.0f);
+        float3 sqrSum = make_float3(0.0f, 0.0f, 0.0f);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                int id = clamp(y - 1 + j, 0, height - 1) * width + clamp(x - 1 + i, 0, width - 1);
+                float4 currentPixel = current[id];
+                float3 value = rgbToYCoCg({currentPixel.x, currentPixel.y, currentPixel.z});
+                mu = add(mu, value);
+                sqrSum = add(sqrSum, multiply(value, value));
+            }
+        }
+        mu = multiply(mu, 1.0f / 9.0f);
+        float3 sigma = squareRoot(getMax(subtract(multiply(sqrSum, 1.0f / 9.0f), multiply(mu, mu)), 0.0f));
+        float gamma = 1.0f;
+        float3 boundl = subtract(mu, multiply(sigma, gamma));
+        float3 boundr = add(mu, multiply(sigma, gamma));
+        float3 boundSize = multiply(subtract(boundr, boundl), 0.5f);
+
+        float3 v = subtract(rgbToYCoCg({h.x, h.y, h.z}), mu);
+        // History clip
+        float t = max(fabsf(v.x) / boundSize.x, max(fabsf(v.y) / boundSize.y, fabsf(v.z) / boundSize.z));
+        if (t > 1) {
+            float3 h_rgb = yCoCgToRgb(add(mu, multiply(v, 1.f / t)));
+            h.x = h_rgb.x;
+            h.y = h_rgb.y;
+            h.z = h_rgb.z;
+        }
+            
+        // // History clamp
+        // float3 h_ycocg = rgbToYCoCg({h.x, h.y, h.z});
+        // float3 h_rgb = yCoCgToRgb(make_float3(
+        //     max(boundl.x, min(boundr.x, h_ycocg.x)),
+        //     max(boundl.y, min(boundr.y, h_ycocg.y)),
+        //     max(boundl.z, min(boundr.z, h_ycocg.z))
+        // ));
+        // h.x = h_rgb.x;
+        // h.y = h_rgb.y;
+        // h.z = h_rgb.z;
+    }
+    
     const float blend = 1.0f / (n + 1);
     const float3 rgb = usable ? lerp(make_float3(h.x, h.y, h.z), make_float3(hdr.x, hdr.y, hdr.z), blend) : make_float3(hdr.x, hdr.y, hdr.z);
     const float newN = fminf(n + 1, maxFrames);
