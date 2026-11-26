@@ -26,7 +26,7 @@ SDL_Texture* gRenderTexture;
 SDL_Texture* gSliceTexture;
 static int gDone;
 static bool gScreenshotRequested;
-static std::string gScreenshotPath; // Empty: next free screenshot_N.bmp
+static std::string gScreenshotPath; // Empty: next free screenshot_N.png
 const int WINDOW_WIDTH = 768;
 const int WINDOW_HEIGHT = 768;
 const int RENDER_WIDTH = 768;
@@ -58,6 +58,38 @@ enum class DisplayQuantity {
     Divergence
 };
 DisplayQuantity gDisplayQuantity = DisplayQuantity::Density;
+
+// Simulation and rendering are paced independently. Each simulation step always advances SIMULATION_DT of simulated time; the simulation limit only sets how many steps run per wall-clock second, so a limit other than 60 plays the scene faster or slower than real time.
+struct FrameRateSettings {
+    bool windowVisible = true;
+    bool limitSimulation = true;
+    int simulationFps = 60;
+    bool limitRender = true;
+    int renderFps = 120;
+};
+FrameRateSettings gFrameRate;
+
+// Counts events over half-second windows to report a rate in events per second.
+struct RateMeter {
+    Uint64 windowStartNs = 0;
+    int count = 0;
+    double rate = 0.0;
+
+    void add(Uint64 nowNs, int events) {
+        if (windowStartNs == 0) {
+            windowStartNs = nowNs;
+        }
+        count += events;
+        const Uint64 elapsed = nowNs - windowStartNs;
+        if (elapsed >= 500'000'000ull) {
+            rate = count * 1.0e9 / static_cast<double>(elapsed);
+            windowStartNs = nowNs;
+            count = 0;
+        }
+    }
+};
+RateMeter gSimulationRate;
+RateMeter gRenderRate;
 
 SDL_FRect calDstRect(int outputWidth, int outputHeight, int simWidth, int simHeight) {
     const float scaleX = static_cast<float>(outputWidth) / simWidth;
@@ -125,6 +157,9 @@ bool update(float deltaTime) {
         LightingSettings& lighting = cudaRenderer->lighting();
         if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_F1) {
             profiler().setWindowVisible(!profiler().windowVisible());
+        }
+        if (e.type == SDL_EVENT_KEY_UP && e.key.key == SDLK_F2) {
+            gFrameRate.windowVisible = !gFrameRate.windowVisible;
         }
         if (e.type == SDL_EVENT_KEY_UP && !uiKeyboard) {
             switch (e.key.key) {
@@ -246,7 +281,10 @@ void saveScreenshot(const std::string& path) {
         SDL_Log("Failed to capture screenshot: %s", SDL_GetError());
         return;
     }
-    if (!SDL_SaveBMP(screenshot, path.c_str())) {
+    // PNG by default; a path ending in .bmp keeps the old BMP output.
+    const bool bmp = path.size() >= 4 && SDL_strcasecmp(path.c_str() + path.size() - 4, ".bmp") == 0;
+    const bool saved = bmp ? SDL_SaveBMP(screenshot, path.c_str()) : SDL_SavePNG(screenshot, path.c_str());
+    if (!saved) {
         SDL_Log("Failed to save screenshot to %s: %s", path.c_str(), SDL_GetError());
     } else {
         SDL_Log("Screenshot saved to %s", path.c_str());
@@ -258,11 +296,11 @@ std::string nextScreenshotPath() {
     const char* basePath = SDL_GetBasePath();
     if (!basePath) {
         SDL_Log("Failed to get application directory: %s", SDL_GetError());
-        return "screenshot.bmp";
+        return "screenshot.png";
     }
     std::string screenshotPath;
     for (Uint64 index = 1;; ++index) {
-        screenshotPath = std::string(basePath) + "screenshot_" + std::to_string(index) + ".bmp";
+        screenshotPath = std::string(basePath) + "screenshot_" + std::to_string(index) + ".png";
         SDL_PathInfo pathInfo;
         if (!SDL_GetPathInfo(screenshotPath.c_str(), &pathInfo)) {
             return screenshotPath;
@@ -270,11 +308,43 @@ std::string nextScreenshotPath() {
     }
 }
 
+void drawFrameRateWindow() {
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10.0f, 10.0f), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    if (ImGui::Begin("Frame Rate (F2)", &gFrameRate.windowVisible, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Checkbox("Limit simulation", &gFrameRate.limitSimulation);
+        ImGui::BeginDisabled(!gFrameRate.limitSimulation);
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderInt("Steps/s", &gFrameRate.simulationFps, 1, 240, "%d", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+
+        ImGui::Checkbox("Limit render", &gFrameRate.limitRender);
+        ImGui::BeginDisabled(!gFrameRate.limitRender);
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderInt("Frames/s", &gFrameRate.renderFps, 1, 480, "%d", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+
+        if (ImGui::Button("Defaults")) {
+            gFrameRate = FrameRateSettings{};
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Simulation: %.1f steps/s%s", gSimulationRate.rate, PAUSE ? " (paused)" : "");
+        ImGui::Text("Render:     %.1f FPS", gRenderRate.rate);
+        ImGui::TextDisabled("Step dt = 1/%.0f s (fixed)", 1.0 / SIMULATION_DT);
+    }
+    ImGui::End();
+}
+
 void drawUi() {
     const CpuScope scope(CpuStage::Ui);
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    if (gFrameRate.windowVisible) {
+        drawFrameRateWindow();
+    }
     if (profiler().windowVisible()) {
         ProfilerContext context;
         context.sceneName = gPresets[gPresetIndex].name;
@@ -375,54 +445,101 @@ void updateWindowTitle(Uint64 ticks) {
     frames = 0;
 }
 
+// One iteration polls input, runs the simulation steps that are due, and renders if a frame
+// is due. With both limits on, it then sleeps until the next deadline. A profiler frame spans
+// from one rendered frame to the next, so its simSteps counts every step in between.
 void loop() {
-    static Uint64 prev_ticks = SDL_GetTicks();
-    static double accumulator = 0.0;
-    constexpr int max_step_per_frame = 4;
+    static Uint64 prevNs = SDL_GetTicksNS();
+    static double simAccumulator = 0.0;   // Seconds of wall time owed to the simulation
+    static Uint64 nextRenderNs = 0;       // 0: render as soon as possible
+    static bool frameOpen = false;
+    static int frameSteps = 0;
+    constexpr int maxStepsPerIteration = 4;
 
     FrameProfiler& frameProfiler = profiler();
-    frameProfiler.beginFrame();
+    if (!frameOpen) {
+        frameProfiler.beginFrame();
+        frameOpen = true;
+        frameSteps = 0;
+    }
 
-    const Uint64 cur_ticks = SDL_GetTicks();
-    double frame_dt = static_cast<double>(cur_ticks - prev_ticks) / 1000.0;
-    prev_ticks = cur_ticks;
+    const Uint64 nowNs = SDL_GetTicksNS();
+    const double frameDt = std::min(static_cast<double>(nowNs - prevNs) / 1.0e9, 0.1);
+    prevNs = nowNs;
 
-    frame_dt = std::min(frame_dt, 0.1);
     bool running;
-    PROFILE_CPU(CpuStage::Input, running = update(static_cast<float>(frame_dt)));
+    PROFILE_CPU(CpuStage::Input, running = update(static_cast<float>(frameDt)));
     if (!running) {
         gDone = 1;
         return;
     }
 
+    // Simulation
+    const double simInterval = 1.0 / std::max(gFrameRate.simulationFps, 1);
     int steps = 0;
     if (PAUSE) {
-        accumulator = 0.0;
+        simAccumulator = 0.0;
     } else {
-        const CpuScope simulation(CpuStage::Simulation);
-        if (frameProfiler.wantsDiagnostics()) {
-            solver.requestDiagnostics();
+        int stepsDue = 1;
+        if (gFrameRate.limitSimulation) {
+            simAccumulator += frameDt;
+            stepsDue = std::min(static_cast<int>(simAccumulator / simInterval), maxStepsPerIteration);
+            simAccumulator -= stepsDue * simInterval;
+            if (stepsDue == maxStepsPerIteration) {
+                simAccumulator = 0.0;   // Too far behind: drop the backlog instead of spiralling
+            }
+        } else {
+            simAccumulator = 0.0;
         }
-        accumulator += frame_dt;
-        while (accumulator >= SIMULATION_DT && steps < max_step_per_frame) {
-            solver.step(static_cast<float>(SIMULATION_DT));
-            accumulator -= SIMULATION_DT;
-            steps++;
-        }
-        if (steps == max_step_per_frame) {
-            accumulator = 0.0;
+        if (stepsDue > 0) {
+            const CpuScope simulation(CpuStage::Simulation);
+            if (frameSteps == 0 && frameProfiler.wantsDiagnostics()) {
+                solver.requestDiagnostics();
+            }
+            for (; steps < stepsDue; ++steps) {
+                solver.step(static_cast<float>(SIMULATION_DT));
+            }
         }
     }
+    frameSteps += steps;
+    gSimulationRate.add(nowNs, steps);
 
-    render(cur_ticks);
-    updateWindowTitle(cur_ticks);
+    // Render
+    const Uint64 renderIntervalNs = 1'000'000'000ull / std::max(gFrameRate.renderFps, 1);
+    Uint64 renderCheckNs = SDL_GetTicksNS();
+    if (!gFrameRate.limitRender || renderCheckNs >= nextRenderNs) {
+        // Keep a steady cadence, but do not try to catch up on frames missed long ago.
+        nextRenderNs = (renderCheckNs - nextRenderNs > renderIntervalNs)
+            ? renderCheckNs + renderIntervalNs
+            : nextRenderNs + renderIntervalNs;
 
-    // The render readback has already waited for the GPU, so this copy does not stall.
-    SolverDiagnostics diagnostics;
-    if (solver.fetchDiagnostics(diagnostics)) {
-        frameProfiler.setDiagnostics(diagnostics);
+        const Uint64 ticksMs = renderCheckNs / 1'000'000ull;
+        render(ticksMs);
+        updateWindowTitle(ticksMs);
+        gRenderRate.add(renderCheckNs, 1);
+
+        // The render readback has already waited for the GPU, so this copy does not stall.
+        SolverDiagnostics diagnostics;
+        if (solver.fetchDiagnostics(diagnostics)) {
+            frameProfiler.setDiagnostics(diagnostics);
+        }
+        frameProfiler.endFrame(frameSteps);
+        frameOpen = false;
+        renderCheckNs = SDL_GetTicksNS();
     }
-    frameProfiler.endFrame(steps);
+
+    // Sleep only when nothing runs unlimited; otherwise the loop spins as fast as it can.
+    const bool simulationIdle = PAUSE || gFrameRate.limitSimulation;
+    if (gFrameRate.limitRender && simulationIdle) {
+        Uint64 wakeNs = nextRenderNs;
+        if (!PAUSE) {
+            const double secondsToStep = std::max(simInterval - simAccumulator, 0.0);
+            wakeNs = std::min(wakeNs, prevNs + static_cast<Uint64>(secondsToStep * 1.0e9));
+        }
+        if (wakeNs > renderCheckNs) {
+            SDL_DelayPrecise(wakeNs - renderCheckNs);
+        }
+    }
 }
 
 // Offline capture: advance a fixed number of steps, render once, save, and exit.
@@ -467,7 +584,7 @@ int main(int argc, char** argv) {
 static int run(int argc, char** argv) {
     int initialPreset = 0;
     int captureSteps = -1;
-    std::string capturePath = "capture.bmp";
+    std::string capturePath = "capture.png";
     bool unlit = false;
     bool emission = false;
 #ifdef PROFILE

@@ -123,6 +123,9 @@ public:
     GridView3D<const float> densityView() const noexcept { return density_.view(); }
     GridView3D<const float> temperatureView() const noexcept { return temperature_.view(); }
     GridView3D<const float> sdfView() const noexcept { return phi_.view(); }
+    GridView3D<const float> uView() const noexcept { return macgrid_.u().view(); }
+    GridView3D<const float> vView() const noexcept { return macgrid_.v().view(); }
+    GridView3D<const float> wView() const noexcept { return macgrid_.w().view(); }
 
     SmokeParameters& parameters() noexcept { return params_; }
     const SmokeParameters& parameters() const noexcept { return params_; }

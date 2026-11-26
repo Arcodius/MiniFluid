@@ -79,15 +79,18 @@ private:
     DeviceBuffer<float4> hdrPixels_;
     DeviceBuffer<float4> historyHdrPixels0_;
     DeviceBuffer<float4> historyHdrPixels1_;
+    DeviceBuffer<float3> motionPixels_;
 
     VolumeTexture density_;
     VolumeTexture temperature_;
     VolumeTexture lightDepth_;     // float4: smoke optical depth toward the sun and the sky, then solid visibility toward the sun and the sky
     VolumeTexture sdf_;            // Signed distance to the solid, clamped at the domain edge
+    VolumeTexture velocity_; // Averaged velocity
     DeviceBuffer<float> skyDepth_;
     LightingSettings lighting_;
 
     int frameIndex_;
+    float lastRenderTime_ = 0.0f;
 
     // Temporal accumulation. The history is restarted whenever what it averages changes: the camera, the simulation state, or a lighting setting that affects the HDR radiance.
     static constexpr int kMaxAccumulatedFrames = 128;

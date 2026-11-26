@@ -22,7 +22,7 @@ The default scene is a hot, buoyant plume rising from a noisy source on the floo
 - **Open boundaries:** smoke leaves through the top and sides of the domain instead of piling up against walls; the floor is solid.
 - **Lit volume rendering:** precomputed light volume (optical depth toward the sun and the sky), Henyey-Greenstein phase function, an octave-based multiple-scattering approximation, sky ambient light, a floor that receives smoke shadows, sky background, ACES tone mapping, and an optional temperature-driven glow.
 - **Staggered MAC grid:** face-centered velocity components with cell-centered pressure, temperature, and smoke density.
-- **Interactive inspection:** camera movement, mouse look, movable sun, scene presets, pause/reset, divergence slices, and BMP screenshots.
+- **Interactive inspection:** camera movement, mouse look, movable sun, scene presets, pause/reset, divergence slices, and PNG screenshots.
 - **Runtime profiler:** an in-app ImGui window (`F1`) with a rolling frame-rate graph, per-stage CPU and GPU timings, solver diagnostics (divergence, pressure residual, CFL, energy, smoke mass), and CSV export.
 - **Development utilities:** offline capture mode and a CPU/CUDA divergence comparison routine.
 
@@ -116,11 +116,11 @@ If you use a different Visual Studio installation, configure a separate build di
 | `--preset <1-4>` | Start with the given scene |
 | `--unlit` | Start with the unlit renderer |
 | `--emission` | Start with temperature emission enabled |
-| `--capture <steps> [file.bmp]` | Run `<steps>` simulation steps of `1/60` s without real-time pacing, render one frame, save it (default `capture.bmp`), print timings, and exit |
+| `--capture <steps> [file.png]` | Run `<steps>` simulation steps of `1/60` s without real-time pacing, render one frame, save it (default `capture.png`; a `.bmp` path saves BMP), print timings, and exit |
 | `--profile` | Open the profiler window at startup |
 | `--profile-record <file.csv>` | Record every frame to a CSV file from startup until exit |
 
-For example, `MiniFluid.exe --preset 2 --capture 420 jets.bmp` saves the colliding-jets scene after seven simulated seconds. The images in `doc/` were produced this way.
+For example, `MiniFluid.exe --preset 2 --capture 420 jets.png` saves the colliding-jets scene after seven simulated seconds. The images in `doc/` were produced this way.
 
 ## Controls
 
@@ -143,9 +143,10 @@ For example, `MiniFluid.exe --preset 2 --capture 420 jets.bmp` saves the collidi
 | `M` | Toggle linear / nearest-neighbor texture scaling |
 | `P` | Save a screenshot beside the executable |
 | `F1` | Show / hide the profiler window |
+| `F2` | Show / hide the frame-rate window (simulation and render limits, default 60 steps/s and 120 FPS) |
 | `Esc` | Exit |
 
-The window title shows the current scene, the frame rate, whether the simulation is paused, and `[REC]` while a profile is being recorded. Screenshots use the first available name in the sequence `screenshot_1.bmp`, `screenshot_2.bmp`, and so on. Camera, lighting, and display controls remain available while the simulation is paused.
+The window title shows the current scene, the frame rate, whether the simulation is paused, and `[REC]` while a profile is being recorded. Screenshots use the first available name in the sequence `screenshot_1.png`, `screenshot_2.png`, and so on. Camera, lighting, and display controls remain available while the simulation is paused.
 
 ## Scenes
 
