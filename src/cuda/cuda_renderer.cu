@@ -27,6 +27,7 @@ struct RenderParams {
     float phaseG;
     float emissionStrength;
     float exposure;
+    float marchStepCells;   // View ray march step, in cells (RenderSettings::stepCells)
     int lit;
     int emission;
     int floor;
@@ -530,7 +531,7 @@ __global__ void renderKernel(
         // Smoke is only integrated in front of the opaque surface, which is what hides it behind.
         const float surfaceDistance = fminf(floorDistance, solidDistance);
         exit = fminf(exit, surfaceDistance);
-        const float stepSize = params.cellSize * 0.5f;
+        const float stepSize = params.cellSize * params.marchStepCells;
         const int maxSteps = static_cast<int>(ceilf((exit - entry) / stepSize));
         float distance = fmaxf(entry + stepSize * jitter, 1e-6f); // to avoid zero distance in division
 
@@ -623,7 +624,9 @@ __global__ void renderKernel(
 // previousCameraValid: false on the first frame, when there is no previous camera to project into.
 // cameraUnchanged: the previous and the current camera are identical. Orthographic cameras are not
 // reprojected, so for them this is the only case in which the history still lines up.
-__global__ void resolveKernel(const float4* current, const float4* previousHistory, float4* currentHistory, const float3* motionPixels, uint8_t* pixels, RenderParams params, RenderCamera previousCamera, bool previousCameraValid, bool cameraUnchanged, RenderCamera currentCamera, int width, int height, bool historyReset, const int maxFrames, const float deltaTime) {
+// Runs at the output resolution (width, height). current and motionPixels are at the render
+// resolution (renderWidth, renderHeight); the history and pixels at the output resolution.
+__global__ void resolveKernel(const float4* current, const float4* previousHistory, float4* currentHistory, const float3* motionPixels, uint8_t* pixels, RenderParams params, RenderCamera previousCamera, bool previousCameraValid, bool cameraUnchanged, RenderCamera currentCamera, int width, int height, int renderWidth, int renderHeight, bool historyReset, const int maxFrames, const float deltaTime) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -631,8 +634,12 @@ __global__ void resolveKernel(const float4* current, const float4* previousHisto
     }
 
     const int index = y * width + x;
-    const float4 hdr = current[index];
-    const float3 motionVector = motionPixels[index];
+    // Lesson 5.2: point upsampling. The render pixel whose area contains this output pixel's center.
+    const int renderX = min(static_cast<int>((x + 0.5f) * renderWidth / width), renderWidth - 1);
+    const int renderY = min(static_cast<int>((y + 0.5f) * renderHeight / height), renderHeight - 1);
+    const int renderIndex = renderY * renderWidth + renderX;
+    const float4 hdr = current[renderIndex];
+    const float3 motionVector = motionPixels[renderIndex];
 
     // Where this pixel's content was in the previous frame. hdr.w is the inverse depth, not the depth.
     float3 origin;
@@ -673,13 +680,14 @@ __global__ void resolveKernel(const float4* current, const float4* previousHisto
     float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     const float n = usable ? h.w : 0;
 
-    // neighbour domain
+    // neighbour domain: the 3x3 render pixels around the one this output pixel takes its color from
     if (usable) {
         float3 mu = make_float3(0.0f, 0.0f, 0.0f);
         float3 sqrSum = make_float3(0.0f, 0.0f, 0.0f);
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j) {
-                int id = clamp(y - 1 + j, 0, height - 1) * width + clamp(x - 1 + i, 0, width - 1);
+                int id = clamp(renderY - 1 + j, 0, renderHeight - 1) * renderWidth
+                    + clamp(renderX - 1 + i, 0, renderWidth - 1);
                 float4 currentPixel = current[id];
                 float3 value = rgbToYCoCg({currentPixel.x, currentPixel.y, currentPixel.z});
                 mu = add(mu, value);
@@ -865,21 +873,34 @@ void CudaRenderer::setResolution(size_t w, size_t h) {
     if (w == width_ && h == height_) {
         return;
     }
-
     DeviceBuffer<uint8_t> pixels(w * h * 4);
-    DeviceBuffer<float4> hdrPixels(w * h);
     DeviceBuffer<float4> historyHdrPixels0(w * h);
     DeviceBuffer<float4> historyHdrPixels1(w * h);
-    DeviceBuffer<float3> motionPixels(w * h);
     devicePixels_ = std::move(pixels);
-    hdrPixels_ = std::move(hdrPixels);
     historyHdrPixels0_ = std::move(historyHdrPixels0);
     historyHdrPixels1_ = std::move(historyHdrPixels1);
-    motionPixels_ = std::move(motionPixels);
     previousCameraValid_ = false;  // The previous frame had another size, so its pixels do not line up
     width_ = w;
     height_ = h;
+    updateRenderResolution();
 }
+
+void CudaRenderer::updateRenderResolution() {
+    const size_t scale = static_cast<size_t>(std::max(renderSettings_.renderScale, 1));
+    // Rounded up, so the render pixels cover the whole output even when the scale does not divide it
+    const size_t w = (width_ + scale - 1) / scale;
+    const size_t h = (height_ + scale - 1) / scale;
+    if (w == renderWidth_ && h == renderHeight_) {
+        return;
+    }
+    DeviceBuffer<float4> hdrPixels(w * h);
+    DeviceBuffer<float3> motionPixels(w * h);
+    hdrPixels_ = std::move(hdrPixels);
+    motionPixels_ = std::move(motionPixels);
+    renderWidth_ = w;
+    renderHeight_ = h;
+}
+
 std::pair<size_t, size_t> CudaRenderer::getResolution() const {
     return std::pair<size_t, size_t>(width_, height_);
 }
@@ -976,9 +997,11 @@ bool CudaRenderer::historyNeedsReset() {
     const uint64_t solverVersion = solver_.version();
     bool versionChanged = (solverVersion != historySolverVersion_);
     bool timeAdvanced   = (solver_.time() > lastRenderTime_);
-    bool reset          = (versionChanged && !timeAdvanced) || radianceSettingsDiffer(lighting_, historyLighting_);
+    bool renderChanged  = (renderSettings_ != historyRenderSettings_);
+    bool reset          = (versionChanged && !timeAdvanced) || radianceSettingsDiffer(lighting_, historyLighting_) || renderChanged;
     historySolverVersion_ = solverVersion;
     historyLighting_ = lighting_;
+    historyRenderSettings_ = renderSettings_;
     return reset;
 }
 
@@ -1004,29 +1027,36 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
     }
 
     PROFILE_GPU(GpuStage::Volumes, updateVolumes());
+    updateRenderResolution();  // The UI may have changed the scale since the last frame
 
     constexpr int tile = 16;
     const dim3 threads(tile, tile);
-    const dim3 blocks(
+    const dim3 outputBlocks(
         (static_cast<unsigned int>(width_) + tile - 1) / tile,
         (static_cast<unsigned int>(height_) + tile - 1) / tile);
+    const dim3 renderBlocks(
+        (static_cast<unsigned int>(renderWidth_) + tile - 1) / tile,
+        (static_cast<unsigned int>(renderHeight_) + tile - 1) / tile);
     RenderParams params = makeRenderParams(solver_, lighting_);
+    params.marchStepCells = std::max(renderSettings_.stepCells, 0.05f);  // A zero step would never advance
 
     const float deltaTime = solver_.time() - lastRenderTime_;
     {
         const GpuScope scope(GpuStage::RayMarch);
-        renderKernel<<<blocks, threads>>>(
+        renderKernel<<<renderBlocks, threads>>>(
             density_.texture(), temperature_.texture(), lightDepth_.texture(), sdf_.texture(), velocity_.texture(),
             params, renderCamera,
-            static_cast<int>(width_), static_cast<int>(height_), frameIndex_, hdrPixels_.data(), motionPixels_.data());
+            static_cast<int>(renderWidth_), static_cast<int>(renderHeight_), frameIndex_, hdrPixels_.data(), motionPixels_.data());
         CUDA_CHECK(cudaGetLastError());
     }
     {
         const GpuScope scope(GpuStage::Resolve);
-        resolveKernel<<<blocks, threads>>>(
-            hdrPixels_.data(), historyHdrPixels0_.data(),  historyHdrPixels1_.data(), motionPixels_.data(), devicePixels_.data(), 
+        resolveKernel<<<outputBlocks, threads>>>(
+            hdrPixels_.data(), historyHdrPixels0_.data(),  historyHdrPixels1_.data(), motionPixels_.data(), devicePixels_.data(),
             params, previousCamera_, previousCameraValid_, sameCamera(previousCamera_, renderCamera), renderCamera,
-            static_cast<int>(width_), static_cast<int>(height_), historyNeedsReset(), kMaxAccumulatedFrames, fmaxf(deltaTime, 0.0f));
+            static_cast<int>(width_), static_cast<int>(height_),
+            static_cast<int>(renderWidth_), static_cast<int>(renderHeight_),
+            historyNeedsReset(), kMaxAccumulatedFrames, fmaxf(deltaTime, 0.0f));
         CUDA_CHECK(cudaGetLastError());
     }
     std::swap(historyHdrPixels0_, historyHdrPixels1_);

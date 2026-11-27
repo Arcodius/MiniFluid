@@ -57,6 +57,21 @@ struct LightingSettings {
     bool floor = true;
 };
 
+// Quality settings of the ray march. Changing either restarts the history.
+struct RenderSettings {
+    float stepCells = 1.0f;  // Ray march step length, in grid cells
+    // The ray march runs at the output resolution divided by this (rounded up). An integer, so render pixels tile the output evenly.
+    int renderScale = 1;
+
+    bool operator==(const RenderSettings& other) const {
+        return (stepCells == other.stepCells) && (renderScale == other.renderScale);
+    }
+
+    bool operator!=(const RenderSettings& other) const {
+        return !(*this == other);
+    }
+};
+
 // The camera as the ray generation sees it: a plain copy of the values one frame was rendered with.
 struct RenderCamera {
     float3 position;
@@ -71,14 +86,20 @@ struct RenderCamera {
 
 class CudaRenderer {
 private:
+    // Two resolutions: the output (what render() returns, and the history) and the ray march's,
+    // which is smaller by RenderSettings::renderScale.
     size_t width_ = 0;
     size_t height_ = 0;
+    size_t renderWidth_ = 0;
+    size_t renderHeight_ = 0;
     Camera& camera_;
     CudaFluidSolver& solver_;
+    // Output resolution
     DeviceBuffer<uint8_t> devicePixels_;
-    DeviceBuffer<float4> hdrPixels_;
     DeviceBuffer<float4> historyHdrPixels0_;
     DeviceBuffer<float4> historyHdrPixels1_;
+    // Render resolution
+    DeviceBuffer<float4> hdrPixels_;
     DeviceBuffer<float3> motionPixels_;
 
     VolumeTexture density_;
@@ -88,6 +109,7 @@ private:
     VolumeTexture velocity_; // Averaged velocity
     DeviceBuffer<float> skyDepth_;
     LightingSettings lighting_;
+    RenderSettings renderSettings_;
 
     int frameIndex_;
     float lastRenderTime_ = 0.0f;
@@ -96,6 +118,7 @@ private:
     static constexpr int kMaxAccumulatedFrames = 128;
     uint64_t historySolverVersion_ = 0;
     LightingSettings historyLighting_;
+    RenderSettings historyRenderSettings_;
     // The camera the previous frame was rendered with, for reprojection. A value, not a reference:
     // it must keep the old state while camera_ moves on. Invalid until a frame has been rendered.
     RenderCamera previousCamera_{};
@@ -120,6 +143,7 @@ private:
     LightVolumeInputs lightVolumeInputs_;
 
     void updateVolumes();
+    void updateRenderResolution();  // Reallocates the render-resolution buffers when the scale changed
     bool historyNeedsReset();
 
 public:
@@ -131,4 +155,7 @@ public:
 
     LightingSettings& lighting() noexcept { return lighting_; }
     const LightingSettings& lighting() const noexcept { return lighting_; }
+    // Read every frame by render(), so the UI can edit it directly, like lighting().
+    RenderSettings& renderSettings() noexcept { return renderSettings_; }
+    const RenderSettings& renderSettings() const noexcept { return renderSettings_; }
 };

@@ -334,6 +334,16 @@ void drawFrameRateWindow() {
             gFrameRate = FrameRateSettings{};
         }
 
+        // Each change restarts the TAA history. Sliders rather than text input: typing "10" would otherwise pass through "1" and restart twice.
+        ImGui::Separator();
+        RenderSettings& renderSettings = cudaRenderer->renderSettings();
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Step cells", &renderSettings.stepCells, 0.25f, 40.0f, "%.2f",
+            ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderInt("Render scale", &renderSettings.renderScale, 1, 4, "1/%d",
+            ImGuiSliderFlags_AlwaysClamp);
+
         ImGui::Separator();
         ImGui::Text("Simulation: %.1f steps/s%s", gSimulationRate.rate, PAUSE ? " (paused)" : "");
         ImGui::Text("Render:     %.1f FPS", gRenderRate.rate);
