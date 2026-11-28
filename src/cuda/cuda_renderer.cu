@@ -445,9 +445,9 @@ __device__ float3 toneMap(float3 color, float exposure) {
     return make_float3(mapped[0], mapped[1], mapped[2]);
 }
 
-__device__ void generateRay(const int x, const int y, const int width, const int height, RenderCamera camera, float3& origin, float3& direction) {
-    const float ndcX = 2.0f * (static_cast<float>(x) + 0.5f) / width - 1.0f;
-    const float ndcY = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / height;
+__device__ void generateRay(const float x, const float y, const int width, const int height, RenderCamera camera, float3& origin, float3& direction) {
+    const float ndcX = 2.0f * (x + 0.5f) / width - 1.0f;
+    const float ndcY = 1.0f - 2.0f * (y + 0.5f) / height;
     origin = camera.position;
     if (camera.perspective) {
         const float aspect = static_cast<float>(width) / height;
@@ -492,7 +492,7 @@ __global__ void renderKernel(
     cudaTextureObject_t velocity,
     RenderParams params,
     RenderCamera camera,
-    int width, int height, int frameIndex,
+    int width, int height, int frameIndex, float2 jitterRay,
     float4* hdrPixels, float3* motionPixels) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -502,7 +502,7 @@ __global__ void renderKernel(
 
     float3 direction;
     float3 origin;
-    generateRay(x, y, width, height, camera, origin, direction);
+    generateRay(x + jitterRay.x, y + jitterRay.y, width, height, camera, origin, direction);
 
     const float shift = 5.588238f * float(frameIndex % 64);
     const float jitter = gradientNoise(static_cast<float>(x) + shift, static_cast<float>(y) + shift);
@@ -626,7 +626,12 @@ __global__ void renderKernel(
 // reprojected, so for them this is the only case in which the history still lines up.
 // Runs at the output resolution (width, height). current and motionPixels are at the render
 // resolution (renderWidth, renderHeight); the history and pixels at the output resolution.
-__global__ void resolveKernel(const float4* current, const float4* previousHistory, float4* currentHistory, const float3* motionPixels, uint8_t* pixels, RenderParams params, RenderCamera previousCamera, bool previousCameraValid, bool cameraUnchanged, RenderCamera currentCamera, int width, int height, int renderWidth, int renderHeight, bool historyReset, const int maxFrames, const float deltaTime) {
+__global__ void resolveKernel(
+    const float4* current, const float4* previousHistory, float4* currentHistory, const float3* motionPixels, 
+    uint8_t* pixels, 
+    RenderParams params, RenderCamera previousCamera, bool previousCameraValid, bool cameraUnchanged, RenderCamera currentCamera, 
+    int width, int height, int renderWidth, int renderHeight, 
+    bool historyReset, const int maxFrames, const float deltaTime, const float2 jitter) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) {
@@ -676,29 +681,42 @@ __global__ void resolveKernel(const float4* current, const float4* previousHisto
         return;
     }
 
-    // On a reset the history is overwritten, not blended: it may be uninitialized memory, and lerp(NaN, hdr, 1) is still NaN, which would then stick in the history forever.
-    float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float4 h = usable ? sampleBilinear(previousHistory, previousPixel, width, height) : make_float4(0.0f, 0.0f, 0.0f, 0.0f); // history or 0 if history not usable
     const float n = usable ? h.w : 0;
 
     // neighbour domain: the 3x3 render pixels around the one this output pixel takes its color from
-    if (usable) {
-        float3 mu = make_float3(0.0f, 0.0f, 0.0f);
-        float3 sqrSum = make_float3(0.0f, 0.0f, 0.0f);
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j) {
-                int id = clamp(renderY - 1 + j, 0, renderHeight - 1) * renderWidth
-                    + clamp(renderX - 1 + i, 0, renderWidth - 1);
-                float4 currentPixel = current[id];
-                float3 value = rgbToYCoCg({currentPixel.x, currentPixel.y, currentPixel.z});
-                mu = add(mu, value);
-                sqrSum = add(sqrSum, multiply(value, value));
-            }
+    // Even if not usable, we still need to compute current pixel
+    float3 mu = make_float3(0.0f, 0.0f, 0.0f);
+    float3 sqrSum = make_float3(0.0f, 0.0f, 0.0f);
+    float3 currentSum = make_float3(0.0f, 0.0f, 0.0f);
+    float wSum = 0.0f;
+    float confidence = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            int rx = clamp(renderX - 1 + i, 0, renderWidth - 1);
+            int ry = clamp(renderY - 1 + j, 0, renderHeight - 1);
+            int id = ry * renderWidth + rx;
+            float3 currentRgb = make_float3(current[id].x, current[id].y, current[id].z);
+            float3 value = rgbToYCoCg(currentRgb);
+            mu = add(mu, value);
+            sqrSum = add(sqrSum, multiply(value, value));
+
+            float dx = (rx + 0.5f + jitter.x) * width / renderWidth - (x + 0.5f);
+            float dy = (ry + 0.5f + jitter.y) * height / renderHeight - (y + 0.5f);
+            float w = exp(-2.29f * (dx * dx + dy * dy));
+            confidence = max(confidence, w);
+            wSum += w;
+            currentSum = add(currentSum, multiply(currentRgb, w));
         }
+    }
+    float3 currentPixel = multiply(currentSum, 1.0f / wSum);
+    if (usable) {
         mu = multiply(mu, 1.0f / 9.0f);
         float3 sigma = squareRoot(getMax(subtract(multiply(sqrSum, 1.0f / 9.0f), multiply(mu, mu)), 0.0f));
         float gamma = 1.0f;
-        float3 boundl = subtract(mu, multiply(sigma, gamma));
-        float3 boundr = add(mu, multiply(sigma, gamma));
+        float3 e = getMax(multiply(sigma, gamma), 0.01f * mu.x); // 0.01 × μ.Y: avoid domain compression
+        float3 boundl = subtract(mu, e);
+        float3 boundr = add(mu, e);
         float3 boundSize = multiply(subtract(boundr, boundl), 0.5f);
 
         float3 v = subtract(rgbToYCoCg({h.x, h.y, h.z}), mu);
@@ -723,9 +741,9 @@ __global__ void resolveKernel(const float4* current, const float4* previousHisto
         // h.z = h_rgb.z;
     }
     
-    const float blend = 1.0f / (n + 1); // TODO: decrease N if clipped too much
-    const float3 rgb = usable ? lerp(make_float3(h.x, h.y, h.z), make_float3(hdr.x, hdr.y, hdr.z), blend) : make_float3(hdr.x, hdr.y, hdr.z);
-    const float newN = fminf(n + 1, maxFrames);
+    const float blend = confidence / (n + confidence); // TODO: decrease N if clipped too much
+    const float3 rgb = usable ? lerp(make_float3(h.x, h.y, h.z), currentPixel, blend) : currentPixel;
+    const float newN = fminf(n + confidence, maxFrames);
     currentHistory[index] = make_float4(rgb.x, rgb.y, rgb.z, newN);
     
     const float3 color = params.lit ? toneMap(rgb, params.exposure) : rgb;
@@ -751,6 +769,17 @@ bool sameCamera(const RenderCamera& a, const RenderCamera& b) {
         && a.tangentHalfFov == b.tangentHalfFov
         && a.halfWidth == b.halfWidth && a.halfHeight == b.halfHeight
         && a.perspective == b.perspective;
+}
+
+float halton(int index, int base) {
+    float result = 0.0f;
+    float fraction = 1.0f;
+    while (index > 0) {
+        fraction /= static_cast<float>(base);
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+    }
+    return result;
 }
 
 // Whether two settings would produce different HDR radiance. Exposure is left out on purpose:
@@ -1039,14 +1068,18 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
         (static_cast<unsigned int>(renderHeight_) + tile - 1) / tile);
     RenderParams params = makeRenderParams(solver_, lighting_);
     params.marchStepCells = std::max(renderSettings_.stepCells, 0.05f);  // A zero step would never advance
-
+    
+    const int sampleCount = 8 * renderSettings_.renderScale * renderSettings_.renderScale;
+    const int index = frameIndex_ % sampleCount + 1;
+    float2 jitterRay = {halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
     const float deltaTime = solver_.time() - lastRenderTime_;
     {
         const GpuScope scope(GpuStage::RayMarch);
         renderKernel<<<renderBlocks, threads>>>(
             density_.texture(), temperature_.texture(), lightDepth_.texture(), sdf_.texture(), velocity_.texture(),
             params, renderCamera,
-            static_cast<int>(renderWidth_), static_cast<int>(renderHeight_), frameIndex_, hdrPixels_.data(), motionPixels_.data());
+            static_cast<int>(renderWidth_), static_cast<int>(renderHeight_), frameIndex_, jitterRay,
+            hdrPixels_.data(), motionPixels_.data());
         CUDA_CHECK(cudaGetLastError());
     }
     {
@@ -1056,7 +1089,7 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
             params, previousCamera_, previousCameraValid_, sameCamera(previousCamera_, renderCamera), renderCamera,
             static_cast<int>(width_), static_cast<int>(height_),
             static_cast<int>(renderWidth_), static_cast<int>(renderHeight_),
-            historyNeedsReset(), kMaxAccumulatedFrames, fmaxf(deltaTime, 0.0f));
+            historyNeedsReset(), kMaxAccumulatedFrames, fmaxf(deltaTime, 0.0f), jitterRay);
         CUDA_CHECK(cudaGetLastError());
     }
     std::swap(historyHdrPixels0_, historyHdrPixels1_);
