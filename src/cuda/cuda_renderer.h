@@ -142,6 +142,8 @@ private:
     };
     LightVolumeInputs lightVolumeInputs_;
 
+    void renderToDevice();
+
     void updateVolumes();
     void updateRenderResolution();  // Reallocates the render-resolution buffers when the scale changed
     bool historyNeedsReset();
@@ -149,7 +151,10 @@ private:
 public:
     explicit CudaRenderer(CudaFluidSolver& solver, Camera& camera, std::pair<size_t, size_t> resolution = {720, 720});
 
+    // Old version: render + read back to frameBuffer
     void render(uint8_t* destination, size_t destinationSize);
+    // New version: render + D2D copy to texture
+    void render(cudaArray_t destination);
     void setResolution(size_t w, size_t h);
     std::pair<size_t, size_t> getResolution() const;
 

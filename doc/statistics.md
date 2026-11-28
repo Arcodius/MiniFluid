@@ -39,7 +39,7 @@ cpu_ui                   | 0.1277         | 0.416      |
 cpu_present              | 0.2338         | 0.718      | 
 ------------------------------------------------------------------------
 
-Charts saved to D:\Projects\MiniFluid\profile_charts
+
 
 
 ## 总结
@@ -213,6 +213,175 @@ cpu_upload               | 0.2624         | 0.579      |
 cpu_ui                   | 0.1348         | 0.528      | 
 cpu_present              | 0.2353         | 2.009      | 
 ------------------------------------------------------------------------
+
+# Upscaling Comparison with Interop
+
+## 1x
+
+scene              Buoyant plume
+grid               128x192x128
+render             768x768
+dt                 0.016667
+pressure_cycles    2
+multigrid_levels   6
+gpu                NVIDIA GeForce RTX 3070
+diagnostics_interval 1
+vram_used_mib      1644
+vram_total_mib     8191
+
+frames 7169, 10.00 s, FPS 716.9, 1% low 301.8, steps 0
+paused frames 7169 / 7169 (paused frames have no simulation timings or diagnostics)
+
+Stage                    | Avg/frame (ms) | Max (ms)   | Avg/step (ms)
+------------------------------------------------------------------------
+gpu_advect_velocity      | 0.0000         | 0.000      | 
+gpu_sources              | 0.0000         | 0.000      | 
+gpu_forces               | 0.0000         | 0.000      | 
+gpu_boundary             | 0.0000         | 0.000      | 
+gpu_divergence           | 0.0000         | 0.000      | 
+gpu_pressure             | 0.0000         | 0.000      | 
+gpu_projection           | 0.0000         | 0.000      | 
+gpu_advect_scalars       | 0.0000         | 0.000      | 
+gpu_diagnostics          | 0.0000         | 0.000      | 
+gpu_volumes              | 0.0034         | 0.035      | 
+gpu_ray_march            | 0.6781         | 0.742      | 
+gpu_resolve              | 0.1094         | 0.124      | 
+gpu_readback             | 0.0164         | 0.030      | 
+------------------------------------------------------------------------
+cpu_input                | 0.0060         | 0.414      | 
+cpu_simulation           | 0.0000         | 0.000      | 
+cpu_render               | 0.1791         | 0.507      | 
+cpu_upload               | 0.0967         | 0.545      | 
+cpu_ui                   | 0.1595         | 0.573      | 
+cpu_present              | 0.2333         | 2.772      | 
+------------------------------------------------------------------------
+
+
+
+## 2x
+
+scene              Buoyant plume
+grid               128x192x128
+render             768x768
+dt                 0.016667
+pressure_cycles    2
+multigrid_levels   6
+gpu                NVIDIA GeForce RTX 3070
+diagnostics_interval 1
+vram_used_mib      1632
+vram_total_mib     8191
+
+frames 9916, 10.00 s, FPS 991.5, 1% low 261.1, steps 0
+paused frames 9916 / 9916 (paused frames have no simulation timings or diagnostics)
+
+Stage                    | Avg/frame (ms) | Max (ms)   | Avg/step (ms)
+------------------------------------------------------------------------
+gpu_advect_velocity      | 0.0000         | 0.000      | 
+gpu_sources              | 0.0000         | 0.000      | 
+gpu_forces               | 0.0000         | 0.000      | 
+gpu_boundary             | 0.0000         | 0.000      | 
+gpu_divergence           | 0.0000         | 0.000      | 
+gpu_pressure             | 0.0000         | 0.000      | 
+gpu_projection           | 0.0000         | 0.000      | 
+gpu_advect_scalars       | 0.0000         | 0.000      | 
+gpu_diagnostics          | 0.0000         | 0.000      | 
+gpu_volumes              | 0.0032         | 0.063      | 
+gpu_ray_march            | 0.3377         | 0.456      | 
+gpu_resolve              | 0.0766         | 0.089      | 
+gpu_readback             | 0.0170         | 0.031      | 
+------------------------------------------------------------------------
+cpu_input                | 0.0032         | 0.280      | 
+cpu_simulation           | 0.0000         | 0.000      | 
+cpu_render               | 0.1566         | 0.704      | 
+cpu_upload               | 0.0643         | 0.310      | 
+cpu_ui                   | 0.1416         | 0.776      | 
+cpu_present              | 0.2259         | 3.265      | 
+------------------------------------------------------------------------
+
+
+
+## 3x
+
+scene              Buoyant plume
+grid               128x192x128
+render             768x768
+dt                 0.016667
+pressure_cycles    2
+multigrid_levels   6
+gpu                NVIDIA GeForce RTX 3070
+diagnostics_interval 1
+vram_used_mib      1628
+vram_total_mib     8191
+
+frames 9261, 8.62 s, FPS 1074.6, 1% low 281.4, steps 0
+paused frames 9261 / 9261 (paused frames have no simulation timings or diagnostics)
+
+Stage                    | Avg/frame (ms) | Max (ms)   | Avg/step (ms)
+------------------------------------------------------------------------
+gpu_advect_velocity      | 0.0000         | 0.000      | 
+gpu_sources              | 0.0000         | 0.000      | 
+gpu_forces               | 0.0000         | 0.000      | 
+gpu_boundary             | 0.0000         | 0.000      | 
+gpu_divergence           | 0.0000         | 0.000      | 
+gpu_pressure             | 0.0000         | 0.000      | 
+gpu_projection           | 0.0000         | 0.000      | 
+gpu_advect_scalars       | 0.0000         | 0.000      | 
+gpu_diagnostics          | 0.0000         | 0.000      | 
+gpu_volumes              | 0.0031         | 0.027      | 
+gpu_ray_march            | 0.2737         | 0.388      | 
+gpu_resolve              | 0.0759         | 0.091      | 
+gpu_readback             | 0.0170         | 0.031      | 
+------------------------------------------------------------------------
+cpu_input                | 0.0042         | 0.158      | 
+cpu_simulation           | 0.0000         | 0.000      | 
+cpu_render               | 0.1553         | 0.808      | 
+cpu_upload               | 0.0664         | 0.314      | 
+cpu_ui                   | 0.1393         | 1.083      | 
+cpu_present              | 0.2181         | 3.237      | 
+------------------------------------------------------------------------
+
+
+
+## 4x
+
+scene              Buoyant plume
+grid               128x192x128
+render             768x768
+dt                 0.016667
+pressure_cycles    2
+multigrid_levels   6
+gpu                NVIDIA GeForce RTX 3070
+diagnostics_interval 1
+vram_used_mib      1628
+vram_total_mib     8191
+
+frames 7957, 7.01 s, FPS 1135.8, 1% low 272.8, steps 0
+paused frames 7957 / 7957 (paused frames have no simulation timings or diagnostics)
+
+Stage                    | Avg/frame (ms) | Max (ms)   | Avg/step (ms)
+------------------------------------------------------------------------
+gpu_advect_velocity      | 0.0000         | 0.000      | 
+gpu_sources              | 0.0000         | 0.000      | 
+gpu_forces               | 0.0000         | 0.000      | 
+gpu_boundary             | 0.0000         | 0.000      | 
+gpu_divergence           | 0.0000         | 0.000      | 
+gpu_pressure             | 0.0000         | 0.000      | 
+gpu_projection           | 0.0000         | 0.000      | 
+gpu_advect_scalars       | 0.0000         | 0.000      | 
+gpu_diagnostics          | 0.0000         | 0.000      | 
+gpu_volumes              | 0.0031         | 0.063      | 
+gpu_ray_march            | 0.2261         | 0.281      | 
+gpu_resolve              | 0.0758         | 0.090      | 
+gpu_readback             | 0.0169         | 0.029      | 
+------------------------------------------------------------------------
+cpu_input                | 0.0042         | 0.187      | 
+cpu_simulation           | 0.0000         | 0.000      | 
+cpu_render               | 0.1408         | 0.512      | 
+cpu_upload               | 0.0583         | 0.256      | 
+cpu_ui                   | 0.1353         | 0.740      | 
+cpu_present              | 0.2194         | 3.265      | 
+------------------------------------------------------------------------
+
 
 # Cell Step Size Comparison
 

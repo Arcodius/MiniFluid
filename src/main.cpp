@@ -15,15 +15,17 @@
 #include "scene_presets.h"
 #include "cuda/cuda_fluid_solver.h"
 #include "cuda/cuda_renderer.h"
+#include "cuda/d3d11_interop.h"
 #include "profile/profiler.h"
 #include "profile/profiler_ui.h"
 
-std::vector<uint8_t> gFrameBuffer;
+uint8_t* gFrameBuffer;
 std::vector<uint8_t> gSliceBuffer;
 SDL_Window* gSDLWindow;
 SDL_Renderer* gSDLRenderer;
 SDL_Texture* gRenderTexture;
 SDL_Texture* gSliceTexture;
+D3D11InteropTarget gInterop;  // Invalid unless init() succeeded; then frames skip the host readback
 static int gDone;
 static bool gScreenshotRequested;
 static std::string gScreenshotPath; // Empty: next free screenshot_N.png
@@ -31,6 +33,7 @@ const int WINDOW_WIDTH = 768;
 const int WINDOW_HEIGHT = 768;
 const int RENDER_WIDTH = 768;
 const int RENDER_HEIGHT = 768;
+constexpr size_t FRAME_BYTES = static_cast<size_t>(RENDER_WIDTH) * RENDER_HEIGHT * 4;
 const int SIM_W = 128;
 const int SIM_WIDTH = SIM_W;
 const int SIM_HEIGHT = SIM_W * 1.5;
@@ -50,6 +53,10 @@ bool PAUSE = false;
 // --exit-steps, the interactive loop exits once this reaches gExitSteps (-1: never).
 long long gTotalSteps = 0;
 long long gExitSteps = -1;
+// With --exit-after, the interactive loop exits after this much wall-clock time (0: never),
+// so paused benchmarks can run unattended.
+Uint64 gExitAfterNs = 0;
+Uint64 gLoopStartNs = 0;
 
 Camera* camera;
 CudaRenderer* cudaRenderer;
@@ -154,6 +161,12 @@ bool update(float deltaTime) {
         }
         if (e.type == SDL_EVENT_QUIT) {
             return false;
+        }
+        // SDL recreated every texture (driver update, TDR...), so the registered D3D11 texture is gone.
+        if (e.type == SDL_EVENT_RENDER_DEVICE_RESET && gInterop.valid()) {
+            if (!gInterop.init(gSDLRenderer, gRenderTexture)) {
+                SDL_Log("CUDA-D3D11 interop lost after device reset, using the readback path");
+            }
         }
         // While the cursor is over the profiler window, or a widget has keyboard focus,
         // the input belongs to ImGui. Releasing buttons is always handled below.
@@ -382,10 +395,24 @@ void render(Uint64 aTicks) {
     int textureWidth;
     int textureHeight;
     if (gDisplayQuantity == DisplayQuantity::Density) {
-        PROFILE_CPU(CpuStage::Render, cudaRenderer->render(gFrameBuffer.data(), gFrameBuffer.size()));
-        const CpuScope upload(CpuStage::Upload);
-        if (!SDL_UpdateTexture(gRenderTexture, nullptr, gFrameBuffer.data(), RENDER_WIDTH * 4 * sizeof(uint8_t))) {
-            SDL_Log("Failed to update texture: %s", SDL_GetError());
+        // Interop: CUDA copies the frame straight into the texture. Map waits for D3D to finish with it; unmap must come before SDL_RenderTexture draws it.
+        cudaArray* renderArray = nullptr;
+        if (gInterop.valid()) {
+            const CpuScope renderScope(CpuStage::Render);
+            renderArray = gInterop.map();
+            if (renderArray != nullptr) {
+                cudaRenderer->render(renderArray);
+            }
+        }
+        if (renderArray != nullptr) {
+            PROFILE_CPU(CpuStage::Upload, gInterop.unmap());
+        } else {
+            // Readback path: no interop, or this frame's map failed
+            PROFILE_CPU(CpuStage::Render, cudaRenderer->render(gFrameBuffer, FRAME_BYTES));
+            const CpuScope upload(CpuStage::Upload);
+            if (!SDL_UpdateTexture(gRenderTexture, nullptr, gFrameBuffer, RENDER_WIDTH * 4)) {
+                SDL_Log("Failed to update texture: %s", SDL_GetError());
+            }
         }
         texture = gRenderTexture;
         textureWidth = RENDER_WIDTH;
@@ -523,7 +550,8 @@ void loop() {
     gTotalSteps += steps;
     gSimulationRate.add(nowNs, steps);
     // Render the final state once and close the profiler frame before exiting.
-    const bool exitReached = gExitSteps >= 0 && gTotalSteps >= gExitSteps;
+    const bool exitReached = (gExitSteps >= 0 && gTotalSteps >= gExitSteps)
+        || (gExitAfterNs > 0 && nowNs - gLoopStartNs >= gExitAfterNs);
 
     // Render
     const Uint64 renderIntervalNs = 1'000'000'000ull / std::max(gFrameRate.renderFps, 1);
@@ -553,7 +581,7 @@ void loop() {
     }
 
     if (exitReached) {
-        SDL_Log("Reached %lld simulation steps, exiting", gTotalSteps);
+        SDL_Log("Exit condition reached after %lld simulation steps, exiting", gTotalSteps);
         gDone = 1;
         return;
     }
@@ -618,6 +646,8 @@ static int run(int argc, char** argv) {
     long long startSteps = 0;
     bool unlit = false;
     bool emission = false;
+    bool useInterop = true;
+    int renderScale = 1;
 #ifdef PROFILE
     bool showProfiler = true;
 #else
@@ -641,6 +671,14 @@ static int run(int argc, char** argv) {
             unlit = true;
         } else if (argument == "--emission") {
             emission = true;
+        } else if (argument == "--no-interop") {
+            useInterop = false;
+        } else if (argument == "--no-render-limit") {
+            gFrameRate.limitRender = false;
+        } else if (argument == "--render-scale" && i + 1 < argc) {
+            renderScale = std::clamp(std::atoi(argv[++i]), 1, 4);
+        } else if (argument == "--exit-after" && i + 1 < argc) {
+            gExitAfterNs = static_cast<Uint64>(std::max(std::atof(argv[++i]), 0.0) * 1.0e9);
         } else if (argument == "--profile") {
             showProfiler = true;
         } else if (argument == "--profile-record" && i + 1 < argc) {
@@ -652,14 +690,31 @@ static int run(int argc, char** argv) {
         return -1;
     }
 
-    gFrameBuffer = std::vector<uint8_t>(RENDER_WIDTH * RENDER_HEIGHT * 4); // ABGR8888
+    CUDA_CHECK(cudaMallocHost(reinterpret_cast<void**>(&gFrameBuffer), FRAME_BYTES)); // ABGR8888
     gSliceBuffer = std::vector<uint8_t>(SIM_WIDTH * SIM_HEIGHT * 4);
     gSDLWindow = SDL_CreateWindow("MiniFluid", WINDOW_WIDTH, WINDOW_HEIGHT, 0);
-    gSDLRenderer = SDL_CreateRenderer(gSDLWindow, nullptr);
+    // Interop needs D3D11. Without it (e.g. no D3D11 driver), any renderer works for the readback path.
+    gSDLRenderer = SDL_CreateRenderer(gSDLWindow, "direct3d11");
+    if (gSDLRenderer == nullptr) {
+        SDL_Log("No direct3d11 renderer (%s), using the default one", SDL_GetError());
+        gSDLRenderer = SDL_CreateRenderer(gSDLWindow, nullptr);
+    }
+    // == on two const char* compares addresses, not text, so the names are compared with SDL_strcmp.
+    const char* rendererName = gSDLRenderer ? SDL_GetRendererName(gSDLRenderer) : nullptr;
+    SDL_Log("SDL renderer: %s", rendererName ? rendererName : "(none)");
     if (!SDL_SetRenderVSync(gSDLRenderer, 0)) {
         SDL_Log("Failed to disable VSync: %s", SDL_GetError());
     }
-    gRenderTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
+    // Interop needs a STATIC texture (D3D11_USAGE_DEFAULT): CUDA cannot register the DYNAMIC one behind STREAMING. But SDL_UpdateTexture on a STATIC texture creates a staging texture on every call, so the readback path gets a STREAMING texture instead.
+    const bool interopRenderer = useInterop && rendererName != nullptr && SDL_strcmp(rendererName, "direct3d11") == 0;
+    gRenderTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888,
+        interopRenderer ? SDL_TEXTUREACCESS_STATIC : SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
+    if (interopRenderer && !gInterop.init(gSDLRenderer, gRenderTexture)) {
+        SDL_DestroyTexture(gRenderTexture);
+        gRenderTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888,
+            SDL_TEXTUREACCESS_STREAMING, RENDER_WIDTH, RENDER_HEIGHT);
+    }
+    SDL_Log("Display path: %s", gInterop.valid() ? "CUDA-D3D11 interop" : "host readback");
     gSliceTexture = SDL_CreateTexture(gSDLRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, SIM_WIDTH, SIM_HEIGHT);
     if (!gSDLWindow || !gSDLRenderer || !gRenderTexture || !gSliceTexture){
         SDL_Log("Initialization failed: %s", SDL_GetError());
@@ -686,6 +741,7 @@ static int run(int argc, char** argv) {
     applyPreset(initialPreset);
     cudaRenderer->lighting().lit = !unlit;
     cudaRenderer->lighting().emission = emission;
+    cudaRenderer->renderSettings().renderScale = renderScale;
 
     if (captureSteps >= 0) {
         capture(captureSteps, capturePath);
@@ -724,6 +780,7 @@ static int run(int argc, char** argv) {
         }
 
         gDone = 0;
+        gLoopStartNs = SDL_GetTicksNS();
         while(!gDone) {
             loop();
         }
@@ -736,12 +793,15 @@ static int run(int argc, char** argv) {
     }
     profiler().releaseGpuResources();
 
+    gInterop.release();  // Before the texture it registered is destroyed
     SDL_DestroyTexture(gSliceTexture);
     SDL_DestroyTexture(gRenderTexture);
     SDL_DestroyRenderer(gSDLRenderer);
     SDL_DestroyWindow(gSDLWindow);
     delete cudaRenderer;
     delete camera;
+    CUDA_CHECK(cudaFreeHost(gFrameBuffer));
+    gFrameBuffer = nullptr;
     SDL_Quit();
 
     return 0;

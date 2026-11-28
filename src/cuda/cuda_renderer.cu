@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cuda_runtime.h>
 #include <limits>
 #include <stdexcept>
 
@@ -1034,12 +1035,7 @@ bool CudaRenderer::historyNeedsReset() {
     return reset;
 }
 
-void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
-    const size_t pixelBytes = width_ * height_ * 4;
-    if (destination == nullptr || destinationSize != pixelBytes) {
-        throw std::invalid_argument("CUDA render destination size does not match the resolution");
-    }
-
+void CudaRenderer::renderToDevice() {
     RenderCamera renderCamera{};
     renderCamera.position = toFloat3(camera_.getPosition());
     renderCamera.front = toFloat3(camera_.getFront());
@@ -1093,11 +1089,37 @@ void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
         CUDA_CHECK(cudaGetLastError());
     }
     std::swap(historyHdrPixels0_, historyHdrPixels1_);
-    PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(
-        destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost)));
+
     previousCamera_ = renderCamera;
     previousCameraValid_ = true;
     frameIndex_++;
 
     lastRenderTime_ = solver_.time();
+}
+
+void CudaRenderer::render(uint8_t* destination, size_t destinationSize) {
+    const size_t pixelBytes = width_ * height_ * 4;
+    if (destination == nullptr || destinationSize != pixelBytes) {
+        throw std::invalid_argument("CUDA render destination size does not match the resolution");
+    }
+
+    renderToDevice();
+    
+    PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy(
+        destination, devicePixels_.data(), pixelBytes, cudaMemcpyDeviceToHost)));
+}
+
+void CudaRenderer::render(cudaArray_t destination) {
+    renderToDevice();
+
+    PROFILE_GPU(GpuStage::Readback, CUDA_CHECK(cudaMemcpy2DToArrayAsync(
+        destination,
+        0, 0,                       // Target offset: 0 byte, 0 line
+        devicePixels_.data(),       // Source
+        width_ * 4,                 // Source pitch: bytes in a line
+        width_ * 4,                 // Width to copy in byte
+        height_,                    // Number of lines
+        cudaMemcpyDeviceToDevice,
+        0                           // Stream: default
+    )));
 }

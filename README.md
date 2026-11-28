@@ -43,6 +43,7 @@ Boundaries are open (smoke leaves through the top and sides) with a solid floor.
 | Light volume | One thread per cell marches toward the sun (self-shadowing). Sky occlusion uses a parallel prefix sum along each column. The volume is rebuilt only when the density or the light changes |
 | Ray marching | One thread per pixel. Density is bound to a 3D CUDA texture, so the hardware does trilinear filtering |
 | Temporal upsampling (TAAU) | The image is ray-marched at 1/N resolution with per-frame sub-pixel jitter. History is reprojected with camera and fluid motion vectors and accumulated at full resolution, with rejection of stale history |
+| Display | **CUDA–D3D11 graphics interop**: the finished frame is copied device-to-device into the texture that SDL draws, so it never crosses PCIe to the host and back. The copy is asynchronous, so the CPU no longer stalls on it |
 
 Lighting uses a Henyey–Greenstein phase function, a 3-octave multiple-scattering approximation, sky ambient light, floor shadows and ACES tone mapping.
 
@@ -75,7 +76,7 @@ All timings are on an NVIDIA RTX 3070 with the 128 × 192 × 128 grid and a 768 
 
 ### Rendering: effect of TAAU render scale
 
-Paused simulation, ray-march step of 1 cell, 10 s average:
+Paused simulation, ray-march step of 1 cell, 10 s average. Measured before interop was added (host readback into pageable memory):
 
 | Render scale | Ray march (ms) | FPS | 1% low FPS |
 | --- | --- | --- | --- |
@@ -85,6 +86,31 @@ Paused simulation, ray-march step of 1 cell, 10 s average:
 | 1/4 | 0.60 | 565 | 330 |
 
 *(Figure TBD: image quality at each render scale, compared with native)*
+
+### Rendering: host readback vs. CUDA–D3D11 interop
+
+Originally every frame was copied to the host (`cudaMemcpy`), then uploaded back to the GPU into the SDL texture. With interop, CUDA writes into that texture directly.
+
+**Before and after.** Same settings as the table above. The "before" column is the pageable-memory build, so the gain includes switching the host buffer to pinned memory as well as interop:
+
+| Render scale | Frame time, before (ms) | Frame time, interop (ms) | FPS, before → interop | Speedup |
+| --- | --- | --- | --- | --- |
+| 1/1 (native) | 2.92 | 1.39 | 343 → 717 | 2.1× |
+| 1/2 | 2.29 | 1.01 | 437 → 992 | 2.3× |
+| 1/3 | 1.85 | 0.93 | 542 → 1075 | 2.0× |
+| 1/4 | 1.77 | 0.88 | 565 → 1136 | 2.0× |
+
+**Interop alone (controlled A/B).** One build, run with and without `--no-interop` (pinned-memory readback). Runs alternated A/B/A/B, twice per mode. Each run pre-rolls 300 steps, then stays paused with the render limit off for 10 s. GPU clocks were logged with `nvidia-smi`.
+
+| Render scale | Frame time, readback (ms) | Frame time, interop (ms) | Speedup | Ray march, readback → interop (ms) |
+| --- | --- | --- | --- | --- |
+| 1/1 (native) | 2.08 | 1.52 | 1.37× | 1.07 → 0.74 |
+| 1/4 | 1.51 | 0.90 | 1.68× | 0.56 → 0.24 |
+
+- **Copy and upload:** readback dropped from 0.25–0.27 ms (pinned) to 0.017 ms, and upload from 0.27–0.29 ms to 0.09–0.14 ms.
+- **No CPU stall:** the CPU no longer waits on the copy, so the UI and present overlap with GPU work.
+- **Ray march also got faster, though its kernel did not change.** It is not a clock effect: both modes held the same 1935–1950 MHz (P2). The likely cause is that, with readback, the previous frame's D3D11 work (texture upload, draw, present) is still on the GPU when the next ray march starts. The two contexts then time-slice, and the CUDA event timing includes that time. Not yet confirmed with Nsight Systems.
+- **1% low:** above about 1000 FPS, 1% low FPS depends on occasional present stalls of about 3 ms, not on rendering cost.
 
 ### Expected results
 
@@ -118,6 +144,10 @@ For older (Pascal) GPUs, use the `-laptop` presets (CUDA 12.9, v143 toolset, `sm
 | `--capture <steps> [file.png]` | Simulate `<steps>` steps offline, save one frame, print timings and exit |
 | `--start-steps <N>` / `--exit-steps <M>` | Pre-roll `N` steps, then start paused / exit after `M` steps |
 | `--profile` / `--profile-record <file.csv>` | Open the profiler / record per-frame timings to CSV |
+| `--no-interop` | Use the host readback path instead of CUDA–D3D11 interop (for comparison, or when interop is unavailable) |
+| `--render-scale <1-4>` | Ray-march at 1/N resolution (TAAU) |
+| `--no-render-limit` | Start with the render frame-rate limit off |
+| `--exit-after <seconds>` | Exit after this much wall-clock time, also while paused (unattended benchmarks) |
 
 `python src/log_profile.py <file.csv>` summarizes a recording and plots charts of it.
 
